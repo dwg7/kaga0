@@ -1,0 +1,2 @@
+# PMTiles本体はリポジトリに含めない(容量大)。scripts/fetch-data.sh で取得する。
+*.pmtiles
