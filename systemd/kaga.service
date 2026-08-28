@@ -1,0 +1,28 @@
+# kaga: 電源投入後に地図を自動起動するsystemdユニット。
+#
+# TODO: ExecStart はまだプレースホルダー。実際のバイナリパスは
+# maplibre-native-slint のビルドパイプラインが固まり次第確定する
+# (docs/decisions/ にADRとして記録すること)。
+#
+# DRM/KMSバックエンドはX11/Wayland不要で直接フレームバッファへ描画するため、
+# graphical.target ではなく multi-user.target の後に起動する。
+# root権限が必要な場合(backend-linuxkms-noseat)は User=root とし、
+# libseat経由でroot不要にできる場合は video/render/input グループを持つ
+# 専用ユーザーに変更する。
+
+[Unit]
+Description=kaga - kitavolca air-gapped map appliance
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/opt/kaga/kaga --data /opt/kaga/data
+Restart=on-failure
+RestartSec=2
+# DRM/KMS直接描画に必要なグループ。libseatなしの場合はUser=rootも検討。
+SupplementaryGroups=video render input
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
