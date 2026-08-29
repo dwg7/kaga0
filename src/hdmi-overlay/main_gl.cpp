@@ -663,10 +663,10 @@ int main(int /*argc*/, char** /*argv*/) {
     //
     // Thread safety follows the net_ssid pattern below: the reader thread
     // only ever touches a plain atomic (no Slint/mbgl call from off the UI
-    // thread); flyto_timer's existing 200ms poll (already the home for other
-    // background-thread-to-UI handoffs) drains it and calls smap->
-    // handle_wheel_zoom() directly -- the exact same call the registered
-    // on_wheel_zoomed handler above makes, so this is a second caller of
+    // thread); saver_timer's existing 60ms poll (already the home for other
+    // background-thread-to-UI handoffs, e.g. the Wi-Fi status update) drains
+    // it and calls smap->handle_wheel_zoom() directly -- the exact same call
+    // the registered on_wheel_zoomed handler above makes, so this is a second caller of
     // that function, not a second code path.
     //
     // MAPLIBRE_WHEEL_DEVS overrides the auto-scan (comma-separated paths),
@@ -1274,6 +1274,12 @@ int main(int /*argc*/, char** /*argv*/) {
     };
     auto ss = std::make_shared<SaverState>();
 
+    // Dev-only status-bar readout toggle; read once here so saver_timer's
+    // [=] capture below picks it up. See the MAPLIBRE_DEBUG_INFO usage
+    // further down in this same timer callback.
+    const bool debug_info_on = std::getenv("MAPLIBRE_DEBUG_INFO") != nullptr;
+    win->set_debug_visible(debug_info_on);
+
     auto saver_timer = std::make_shared<slint::Timer>();
     saver_timer->start(
         slint::TimerMode::Repeated, std::chrono::milliseconds(60), [=]() {
@@ -1549,6 +1555,18 @@ int main(int /*argc*/, char** /*argv*/) {
                     float dy = clicks > 0 ? -1.0f : 1.0f;  // see reader thread comment
                     for (int i = 0; i < std::abs(clicks); ++i)
                         smap->handle_wheel_zoom(cx, cy, dy);
+                }
+
+                // Dev-only status-bar readout: "<w>x<h> <fps>fps". Gated by
+                // MAPLIBRE_DEBUG_INFO (debug_info_on, read once at startup
+                // below) -- off by default for the shipped appliance; on for
+                // now while kaga is under active perf tuning (docs/plan.md).
+                if (debug_info_on) {
+                    auto sz = win->window().size();
+                    char buf[32];
+                    std::snprintf(buf, sizeof(buf), "%ux%u %.0ffps", sz.width,
+                                  sz.height, smap->last_fps());
+                    win->set_debug_text(slint::SharedString(buf));
                 }
 
                 // Status-bar Wi-Fi indicator (polled in thread (c2) above).

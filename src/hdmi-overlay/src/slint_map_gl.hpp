@@ -59,6 +59,13 @@ public:
         return style_loaded.load();
     }
 
+    // Most recent fps figure (updated every ~2s in render(), independent of
+    // MAPLIBRE_PERF). kaga's debug status-bar readout reads this; see
+    // MAPLIBRE_DEBUG_INFO in main_gl.cpp.
+    double last_fps() const {
+        return last_fps_.load();
+    }
+
     // Pointer / touch interaction (wired from the Slint UI callbacks).
     void handle_mouse_press(float x, float y);
     void handle_mouse_release();
@@ -181,6 +188,7 @@ private:
     // vs "other" (Slint UI compositing + present + vsync wait), and flags slow
     // frames (>33ms) to localize stutter.
     bool perf_log_ = false;
+    std::atomic<double> last_fps_{0.0};
     std::chrono::steady_clock::time_point last_frame_{};
     double acc_frame_ms_ = 0.0, acc_rl_ms_ = 0.0, acc_rn_ms_ = 0.0;
     double max_frame_ms_ = 0.0, max_rl_ms_ = 0.0, max_rn_ms_ = 0.0;

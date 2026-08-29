@@ -2,12 +2,17 @@
 # 実機の起動時自動起動(appliance化)をON/OFFする。
 #
 # ON(true):  ビルド済みバイナリを /opt/kaga/bin/ へコピーし、
-#            kaga-httpd.service + kaga-map.service を有効化・起動する。
+#            kaga-map.service を有効化・起動する。
 #            kaga-map.service は Conflicts=getty@tty1.service を持つため、
 #            起動と同時にgetty@tty1(コンソールログイン)は自動停止する
 #            (systemdのConflicts=は双方向。詳細はsystemd/kaga-map.service参照)。
-# OFF(false): 上記2ユニットを停止・無効化し、getty@tty1を復帰させる
+# OFF(false): 上記ユニットを停止・無効化し、getty@tty1を復帰させる
 #            (通常のSSH開発作業に戻る)。
+#
+# kaga-httpd.service(busybox httpd経由のPMTiles配信)は2026-08-30に
+# pmtiles://file://(mbgl-core内蔵のLocalFileSource、HTTPを経由しない
+# バイト範囲read)へ切り替えたため、もう不要(systemd/kaga-httpd.serviceは
+# 参考として残置。詳細はdocs/decisions/0014・docs/plan.md参照)。
 #
 # ビルド成果物の場所は現状 ~/poc/mln-slint-cpp/build/cpp/maplibre-slint-gl
 # 固定(docs/decisions/0014参照。ビルド手順が整理されたら変数化する)。
@@ -52,13 +57,11 @@ if [ "${MODE}" = "true" ]; then
     echo "--- systemdユニットを配置(User=${KAGA_USER}を埋め込み) ---"
     sed "s/__KAGA_USER__/${KAGA_USER}/" "${KAGA_ROOT}/systemd/kaga-map.service" \
         | ssh "${TARGET}" "cat | sudo tee /etc/systemd/system/kaga-map.service > /dev/null"
-    scp "${KAGA_ROOT}/systemd/kaga-httpd.service" "${TARGET}:/tmp/kaga-httpd.service"
-    ssh "${TARGET}" "sudo mv /tmp/kaga-httpd.service /etc/systemd/system/kaga-httpd.service"
 
     echo "--- 有効化・起動(getty@tty1はConflicts=により自動停止) ---"
     ssh "${TARGET}" "
         sudo systemctl daemon-reload
-        sudo systemctl enable --now kaga-httpd.service
+        sudo systemctl disable --now kaga-httpd.service 2>/dev/null || true
         sudo systemctl enable --now kaga-map.service
     "
     echo "✓ autoexec ON。次回電源投入時から地図が自動起動する。"

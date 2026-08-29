@@ -1,8 +1,14 @@
 # kaga: PMTiles/style.jsonをローカル配信するHTTPサーバー。
 #
-# maplibre-nativeのPMTilesFileSourceはHTTP(S) Range要求を使うため、
-# Range非対応のPython http.serverでは動かない(docs/decisions/0014参照)。
-# busyboxのhttpdはRange対応(206 Partial Content)なのでこれを使う。
+# **2026-08-30時点で不使用**: pmtiles://file://(mbgl-core内蔵の
+# LocalFileSource、HTTPを経由しないバイト範囲read)に切り替えたため、
+# kaga-map.serviceはこのユニットに依存しなくなった。fpsは同等、プロセスが
+# 1つ減るぶんシンプル。詳細はdocs/decisions/0014・docs/plan.md参照。
+# 万一file://方式で問題が出た場合の切り戻し用に残置。
+#
+# (以下は元の説明)maplibre-nativeのPMTilesFileSourceはHTTP(S) Range要求を
+# 使うため、Range非対応のPython http.serverでは動かない。busyboxのhttpdは
+# Range対応(206 Partial Content)なのでこれを使っていた。
 #
 # 127.0.0.1のみで待ち受け(-h でドキュメントルート指定、外部公開はしない)。
 
