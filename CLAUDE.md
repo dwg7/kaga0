@@ -241,9 +241,10 @@ VBM/VLCM PMTilesは `depot.optgeo.org` から直接取得する(`just fetch-data
 - [x] Stage 1: RPi OS Liteが起動し、SSHで入れる
 - [x] Stage 2: コンソール(TTY)にHDMI経由で表示できる(JAPANNEXTディスプレイ、
       HDMI0、`m329 login:`プロンプトを目視確認済み)
-- [ ] Stage 3: DRM/KMS経由でSlintのHello Worldアプリが表示できる(**作業中** —
-      進捗・再開手順は[docs/stage3-build-log.md](docs/stage3-build-log.md)参照)
-- [ ] Stage 4: MapLibre Native単体が何らかの形でレンダリングできる
+- [x] Stage 3: DRM/KMS経由でSlintのHello Worldアプリが表示できる(ハードウェアGL
+      〈v3d〉で動作、トラックボールのカーソル追従も確認済み。詳細・経緯は
+      [docs/stage3-build-log.md](docs/stage3-build-log.md)参照)
+- [ ] Stage 4: MapLibre Native単体が何らかの形でレンダリングできる(**作業中**)
 - [ ] Stage 5: MapLibre NativeとSlintが繋がり、地図がHDMI画面に出る
 - [ ] Stage 6: VBM/VLCM PMTilesを実際に表示する(← v0の成功条件到達点)
 - [ ] Stage 7: systemdで自動起動、電源投入だけで地図が立ち上がる
