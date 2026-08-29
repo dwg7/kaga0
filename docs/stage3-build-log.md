@@ -141,6 +141,37 @@ sudo apt-get install -y libfontconfig1-dev libudev-dev libinput-dev \
     libdrm-dev libgbm-dev libxkbcommon-dev libwayland-dev
 ```
 
+## Stage 3達成 + 解像度・swap方針の修正(2026-08-29)
+
+**Slint単体のHello Worldが、DRM/KMS経由でJAPANNEXTディスプレイに表示できることを確認した
+(Stage 3の成功条件を達成)。** しかも当初想定していたsoftware rendering(llvmpipe)は不要で、
+**ハードウェアGL(VideoCoreのv3dドライバ、GLES2)でそのまま動いた**。トラックボールの
+カーソルも画面全域で正しく追従することを確認済み。
+
+**わかったこと・修正した前提**:
+- `EGL_PLATFORM=surfaceless`はSlint自身のオンスクリーンサーフェス作成には**不適切**
+  だった(off-screen専用プラットフォームのため)。これを外したら動いた。llvmpipe/
+  software renderingが必須なのはmaplibre-native側がGLES3を要求する場合の話であり、
+  Slint単体(femtovg、GLES2で足りる)には無関係
+- `SLINT_BACKEND=linuxkms-noseat`は**実行時の値としては無効**(Slint 1.17時点)。
+  `noseat`はコンパイル時のCargo feature名であり、実行時は`linuxkms-femtovg`等の
+  renderer名を指定する必要がある。upstream(maplibre-native-slint)のガイドは
+  やや古いSlintバージョン向けの表記のまま
+- **JAPANNEXTディスプレイのネイティブ解像度は3840x2160(4K)**。maplibre-native側の
+  software rendering(llvmpipe)はピクセル数に比例してコストが増えるため、upstream
+  検証環境(480×320)と比べて54倍のピクセル数になる4Kのままでは実用速度が出ない
+  懸念がある。**`/boot/firmware/cmdline.txt`に`video=HDMI-A-1:1920x1080@60`を追加し、
+  出力解像度を1920x1080に強制した**(ディスプレイ側は複数解像度対応、パネル側で
+  スケーリングされる想定)
+- **swap方針を修正**: Trixieには`rpi-swap`という新しいzram+file階層型swap管理が
+  標準搭載されており、zram(2GB)が溢れた分を`/var/swap`(最大2GB、`/etc/rpi/swap.conf`
+  でディスク使用率50%上限も設定済み)に自動でwritebackする。これは今回手動追加した
+  `/var/swap-build.img`(4GB)と役割が重複しており、しかも再起動で無効化されていた
+  (fstab未登録のため)。**`/var/swap-build.img`は削除し、OS標準のrpi-swapに一任する
+  方針に変更**。ディスク空きが6.1GB→11GBに回復した。念のため再起動して検証したところ、
+  `/var/swap`(2GB)は起動のたびに自動再生成される仕様だが(rpi-swap標準の常設コストとして
+  許容)、手動追加した`/var/swap-build.img`は再生成されず、削除は恒久的に有効と確認できた
+
 ## ディスク逼迫時の対応方針(2026-08-29)
 
 サブモジュールcloneが完了した時点で空き9.1GB(全39ネストサブモジュール込みで`.git`は6.0GBに拡大)。
