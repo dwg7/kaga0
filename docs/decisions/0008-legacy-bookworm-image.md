@@ -1,6 +1,6 @@
 # 8. SDカード書き込みには "Raspberry Pi OS (Legacy, 64-bit) Lite" (Bookworm) を使う
 
-- ステータス: 承認
+- ステータス: 置き換え済み — [0009](0009-trixie-and-cloudinit.md) に置き換え
 - 日付: 2026-08-29
 
 ## 状況
@@ -35,3 +35,11 @@ user-data形式が必要になるのかは未検証だった。
   配布されているため、実用上の懸念は小さいと判断
 - 将来、cloudinit-rpi形式のuser-dataスキーマを検証できたら、本ADRを見直し
   最新イメージへ移行する
+
+## 追記(2026-08-29、同日中に撤回)
+
+上記の「未検証」という前提が、その日のうちに覆った。maplibre-native-slintの
+Raspberry Pi/LinuxKMS対応(PR #66)が、まさに「Raspberry Pi 4, Debian 13 (trixie)」を
+表示ホストとして実機検証済みであることが判明し、また公式のcloud-init記事により
+user-dataのスキーマも十分検証可能であることが分かった。[0009](0009-trixie-and-cloudinit.md)
+で撤回している。

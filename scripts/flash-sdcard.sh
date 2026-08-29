@@ -4,19 +4,20 @@
 # rpi-imager --cli の src引数は「OS名」ではなく実際のイメージファイル/URLである
 # (2026-08-29、実機にインストール済みのrpi-imager 2.0.11.1の`--cli`ヘルプで確認)。
 # そのためRaspberry Pi公式のカタログJSON(os_list_imagingutility_v3.json)を都度取得し、
-# OS_IMAGE名からダウンロードURLとSHA256を解決してから rpi-imager に渡す。
+# OS_IMAGE名からダウンロードURL・SHA256・init_formatを解決してから rpi-imager に渡す。
 #
-# OSは既定で **Raspberry Pi OS (Legacy, 64-bit) Lite**(Bookworm, init_format=systemd)
-# を使う。最新の「Raspberry Pi OS Lite (64-bit)」はTrixieベースでinit_format=
-# cloudinit-rpiに切り替わっており、custom.tomlではなくcloud-init user-data形式の
-# カスタマイズが必要になった可能性がある(2026-08-29時点、公式カタログJSONで確認。
-# この新形式の正確なスキーマは未検証)。実績のあるcustom.toml方式(下記)を確実に
-# 使うため、あえてLegacy(Bookworm)を選んでいる。詳細は
-# docs/decisions/0008-legacy-bookworm-image.md 参照。
+# OSは既定で **Raspberry Pi OS Lite (64-bit)**(Trixie, init_format=cloudinit-rpi)を使う。
+# 一度はLegacy(Bookworm, custom.toml方式)を選んだが、以下の理由でTrixieに戻した:
+#   - maplibre-native-slintのRaspberry Pi/LinuxKMS対応(PR #66, rust/RASPBERRY_PI.md)が
+#     まさに「Raspberry Pi 4, Debian 13 (trixie)」を表示ホストとして実機検証済み
+#   - cloud-initのuser-data形式は業界標準で、RPi固有のcustom.tomlより仕様を確信を
+#     持って扱える(公式記事: https://www.raspberrypi.com/news/cloud-init-on-raspberry-pi-os/)
+# 詳細は docs/decisions/0009-trixie-and-cloudinit.md 参照(0008を置き換え)。
 #
-# custom.toml は Raspberry Pi OS Bookworm系(init_format=systemd)が起動時に読む
-# 標準のカスタマイズ機構で、hostname/user/ssh/localeをboot パーティションへ
-# 直接書き込むだけで適用される。
+# init_formatに応じてカスタマイズ方式を切り替える:
+#   - cloudinit-rpi(Trixie系): boot パーティションに `user-data`(cloud-init YAML)を書く
+#   - systemd(Bookworm/Legacy系): boot パーティションに `custom.toml` を書く
+# (OS_IMAGE環境変数でLegacyに切り替えた場合もそのまま動くようにしてある)
 #
 # ホスト名の付け方は docs/decisions/0006-hostname-naming.md 参照
 # (実機固有の識別名は .env に書く。.gitに残したくない情報のため — 0007参照)。
@@ -40,7 +41,7 @@ KAGA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 DEVICE="${1:?使い方: flash-sdcard.sh /dev/diskN (事前に 'diskutil list' で確認)}"
 HOSTNAME="${KAGA_HOST%%.local}"
-OS_IMAGE="${OS_IMAGE:-Raspberry Pi OS (Legacy, 64-bit) Lite}"
+OS_IMAGE="${OS_IMAGE:-Raspberry Pi OS Lite (64-bit)}"
 PUBKEY_FILE="${SSH_PUBKEY_FILE:-${HOME}/.ssh/id_ed25519.pub}"
 PUBKEY_FILE="${PUBKEY_FILE/#\~/${HOME}}"
 
@@ -78,12 +79,14 @@ if not walk(data["os_list"]):
 ' "${OS_IMAGE}"
 )" || { echo "❌ OSカタログに '${OS_IMAGE}' が見つかりません" >&2; exit 1; }
 
-echo "   → ${OS_URL}"
-if [ "${OS_INIT_FORMAT}" != "systemd" ]; then
-    echo "❌ '${OS_IMAGE}' の init_format は '${OS_INIT_FORMAT}' で、想定するcustom.toml方式(systemd)と異なります。" >&2
-    echo "   docs/decisions/0008-legacy-bookworm-image.md を参照し、OS_IMAGEを見直してください" >&2
-    exit 1
-fi
+echo "   → ${OS_URL} (init_format=${OS_INIT_FORMAT})"
+case "${OS_INIT_FORMAT}" in
+    cloudinit-rpi|systemd) ;;
+    *)
+        echo "❌ '${OS_IMAGE}' の init_format '${OS_INIT_FORMAT}' はこのスクリプトが対応していない形式です" >&2
+        exit 1
+        ;;
+esac
 
 echo "=== 対象デバイス確認 ==="
 diskutil list "${DEVICE}"
@@ -102,7 +105,6 @@ echo
 echo "=== OSイメージ書き込み: ${OS_IMAGE} → ${DEVICE} ==="
 rpi-imager --cli "${OS_URL}" "${DEVICE}" --sha256 "${OS_SHA256}"
 
-echo "=== custom.toml を boot パーティションへ書き込み ==="
 BOOT_MOUNT="/Volumes/bootfs"
 if [ ! -d "${BOOT_MOUNT}" ]; then
     echo "❌ ${BOOT_MOUNT} が見つかりません。書き込み直後に自動マウントされるまで少し待ってから再実行してください" >&2
@@ -111,7 +113,52 @@ fi
 
 PUBKEY_CONTENT="$(cat "${PUBKEY_FILE}")"
 
-cat > "${BOOT_MOUNT}/custom.toml" <<EOF
+if [ "${OS_INIT_FORMAT}" = "cloudinit-rpi" ]; then
+    echo "=== cloud-init user-data を boot パーティションへ書き込み ==="
+    # meta-dataはRaspberry Pi OSイメージ側に既定で同梱されており、そのままで良い
+    # (公式記事: 上書き不要と明記)。ここではuser-dataのみ書く。
+    # 値はjson.dumps()でエスケープしてYAMLに埋め込む(パスワードに"や\が含まれても
+    # 壊れないように。bashのヒアドキュメントでの単純な文字列展開はここでは使わない)。
+    HOSTNAME="${HOSTNAME}" RPI_USER="${RPI_USER}" RPI_PASSWORD="${RPI_PASSWORD}" PUBKEY_CONTENT="${PUBKEY_CONTENT}" \
+        python3 - "${BOOT_MOUNT}/user-data" <<'PYEOF'
+import json, os, sys
+
+hostname = os.environ["HOSTNAME"]
+user = os.environ["RPI_USER"]
+password = os.environ["RPI_PASSWORD"]
+pubkey = os.environ["PUBKEY_CONTENT"].strip()
+out_path = sys.argv[1]
+
+doc = f"""#cloud-config
+hostname: {json.dumps(hostname)}
+manage_etc_hosts: true
+
+timezone: Asia/Tokyo
+keyboard:
+  model: pc105
+  layout: jp
+
+package_update: false
+package_upgrade: false
+
+ssh_pwauth: false
+
+users:
+  - name: {json.dumps(user)}
+    groups: [adm, dialout, sudo, audio, video, plugdev, input, netdev, gpio, i2c, spi, render]
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    plain_text_passwd: {json.dumps(password)}
+    ssh_authorized_keys:
+      - {json.dumps(pubkey)}
+"""
+with open(out_path, "w") as f:
+    f.write(doc)
+PYEOF
+else
+    echo "=== custom.toml を boot パーティションへ書き込み(Legacy/Bookworm) ==="
+    cat > "${BOOT_MOUNT}/custom.toml" <<EOF
 config_version = 1
 
 [system]
@@ -131,6 +178,7 @@ authorized_keys = [ "${PUBKEY_CONTENT}" ]
 keymap = "jp"
 timezone = "Asia/Tokyo"
 EOF
+fi
 
 sync
 diskutil eject "${DEVICE}" >/dev/null 2>&1 || true

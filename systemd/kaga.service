@@ -23,6 +23,13 @@ RestartSec=2
 # DRM/KMS直接描画に必要なグループ。libseatなしの場合はUser=rootも検討。
 SupplementaryGroups=video render input
 Environment=RUST_LOG=info
+# RPiのVideoCore GPUはmaplibre-native向けのハードウェアGLES3パスを持たないため、
+# Mesaのソフトウェアラスタライザ(llvmpipe)へ強制フォールバックする。
+# 詳細: docs/decisions/0010-software-gl-required.md
+Environment=SLINT_BACKEND=linuxkms-noseat
+Environment=EGL_PLATFORM=surfaceless
+Environment=LIBGL_ALWAYS_SOFTWARE=1
+Environment=GALLIUM_DRIVER=llvmpipe
 
 [Install]
 WantedBy=multi-user.target
