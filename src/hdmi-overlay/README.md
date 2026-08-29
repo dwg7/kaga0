@@ -21,10 +21,14 @@ kagaが実際に実機(m329)で動かしているアプリのソース。[docs/d
     整合性)
   - ステータスバーに開発用fps/解像度表示を追加(`debug-text`/
     `debug-visible`、`MAPLIBRE_DEBUG_INFO`で切替)
-  - 画面下部全幅にVBM/VLCM地物の属性(名称のみ)表示バーを追加
-    (`feature-info-text`)。ツールチップ/吹き出しではなく一行の下部パネル
+  - 画面下部全幅にVBM/VLCM分類塗り面の属性(`name`属性のみ)表示バーを追加
+    (`feature-info-text`)。ツールチップ/吹き出しではなく一行の下部パネル。
+    塗り面自身のfill-colorをスワッチ表示する`feature-info-color`も併設
+    (「名称」ではなく「name」を見る理由、色連動の実装は下記`slint_map_gl.cpp`参照)
   - 上部ツールバー右にシャットダウンボタン(赤系、`request-shutdown`
     コールバック)。kagaはキーボード/ネットワーク無しで持ち込む前提のため
+  - 右端の縦ズームストリップを画面高の1/3・垂直中央に縮小(旧: 上部バー下から
+    画面最下部までの全長)。ホイール/ダブルクリックが主要ズーム手段になったため
 - `main_gl.cpp`:
   - マウスホイールでのズームを独自実装(生evdev読み取り、
     `MAPLIBRE_WHEEL_DEVS`)。Slintの`linuxkms`バックエンドは`Axis`/wheel
@@ -34,15 +38,21 @@ kagaが実際に実機(m329)で動かしているアプリのソース。[docs/d
     `saver_timer`(60ms)で`SlintMapGL::query_feature_info()`を呼び
     スロットリング。hover検知そのものはSlint本体では既に可能で、
     `src/vendor-patches/`の`m-map-view.slint`パッチで転送経路を追加している
-  - `MAPLIBRE_DEBUG_INFO`環境変数でステータスバーのfps/解像度表示をON/OFF
-    (開発時のみ想定)
+  - `MAPLIBRE_DEBUG_INFO`環境変数でステータスバーのfps/解像度/CPU%/SoC温度
+    表示をON/OFF(開発時のみ想定)。CPU%は`/proc/stat`の差分、温度は
+    `/sys/class/thermal/thermal_zone0/temp`
   - シャットダウンボタンのハンドラ(`sudo systemctl poweroff`)
 - `src/slint_map_gl.cpp`/`.hpp`:
   - `MAPLIBRE_ZOOM_BIAS`環境変数を追加(fps対策・見た目調整、詳細は
     [docs/plan.md](../../docs/plan.md))
   - 直近のfps値を取得する`last_fps()`を追加(上記デバッグ表示用)
   - `query_feature_info(x, y)`を追加: `mbgl::Renderer::queryRenderedFeatures`
-    でvbm/vlcmソースのフィーチャーを検索し、`名称`プロパティの値のみ返す
+    でvbm/vlcmソースのフィーチャーを検索し、`name`プロパティ(VLCM分類塗り面の
+    キー。点/symbolの`名称`ではない——地図注記と重複するため意図的に不採用)
+    の値と、その塗り面の実際のfill-colorを`{name, fill_color_hex}`で返す。
+    色は`build_fill_color_table()`が`style.json`をrapidjsonで走査して構築する
+    `["match",["get","name"],...]`形式のfill-color式の表から引く
+    (mbgl-coreが`PUBLIC`リンクしているrapidjsonを利用、新規vendor依存なし)
 
 `platform/custom_file_source.*`・`src/style_list.*`・`src/voice_activity.*`・
 `src/slint_gl_backend.*`は上流のまま(未改変、ビルド対象として必要なので同梱)。

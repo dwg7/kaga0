@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <mbgl/map/camera.hpp>
 #include <mbgl/map/map_options.hpp>
@@ -21,6 +22,8 @@
 #include <mbgl/util/geojson.hpp>
 #include <mbgl/util/chrono.hpp>
 #include <mbgl/util/geo.hpp>
+#include <fstream>
+#include <rapidjson/document.h>
 
 SlintMapGL::~SlintMapGL() {
     // Orderly shutdown: detach observer, then drop map before frontend/backend.
@@ -103,6 +106,7 @@ void SlintMapGL::setup(uint32_t fbo, int w, int h,
 
     style_url_ = styleUrl;
     map->getStyle().loadURL(styleUrl);
+    build_fill_color_table(styleUrl);
     // Zoom bias (MAPLIBRE_ZOOM_BIAS, default 0): added to every absolute
     // zoom target below and in fly_to()/jump_to(). See slint_map_gl.hpp.
     if (const char* e = std::getenv("MAPLIBRE_ZOOM_BIAS")) {
@@ -538,6 +542,84 @@ void SlintMapGL::handle_double_click(float x, float y, bool shift) {
 }
 
 namespace {
+// style.json colors are written as "#rrggbb" or "rgb(r,g,b)" (see
+// vlcm-natural-fill); normalize both to "#rrggbb" so the Slint side only
+// ever has to parse one format. Empty return means "not a color we
+// recognise" (caller then leaves the panel colorless rather than guessing).
+std::string normalize_css_color(const std::string& s) {
+    if (s.size() == 7 && s[0] == '#')
+        return s;
+    int r = 0, g = 0, b = 0;
+    if (std::sscanf(s.c_str(), "rgb(%d,%d,%d)", &r, &g, &b) == 3) {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "#%02x%02x%02x", r & 0xff, g & 0xff,
+                     b & 0xff);
+        return buf;
+    }
+    return "";
+}
+}  // namespace
+
+// Reads style.json directly off disk (styleUrl is always a local file:// path
+// for kaga, see gl_map_window.slint) and, for every fill layer whose
+// paint.fill-color is `["match", ["get","name"], k1, v1, ..., default]`,
+// records k->v in name_to_fill_color_. This is the one property VBM/VLCM's
+// classification fill layers key their color on -- the same "name" the
+// hover panel already shows -- so no other match property needs handling.
+// Anything past the last string/string pair (a nested fallback sub-match,
+// e.g. vlcm-natural-fill's trailing code2 match, or a bare default color) is
+// left alone; queryRenderedFeatures below simply shows no color for those.
+void SlintMapGL::build_fill_color_table(const std::string& styleUrl) {
+    name_to_fill_color_.clear();
+    const std::string prefix = "file://";
+    if (styleUrl.compare(0, prefix.size(), prefix) != 0)
+        return;  // remote/other scheme: skip rather than guess
+    std::ifstream f(styleUrl.substr(prefix.size()), std::ios::binary);
+    if (!f)
+        return;
+    std::string text((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    rapidjson::Document doc;
+    if (doc.Parse(text.c_str()).HasParseError() || !doc.IsObject())
+        return;
+    auto layers = doc.FindMember("layers");
+    if (layers == doc.MemberEnd() || !layers->value.IsArray())
+        return;
+    for (const auto& layer : layers->value.GetArray()) {
+        if (!layer.IsObject())
+            continue;
+        auto type = layer.FindMember("type");
+        if (type == layer.MemberEnd() || type->value != "fill")
+            continue;
+        auto paint = layer.FindMember("paint");
+        if (paint == layer.MemberEnd() || !paint->value.IsObject())
+            continue;
+        auto fc = paint->value.FindMember("fill-color");
+        if (fc == paint->value.MemberEnd() || !fc->value.IsArray())
+            continue;
+        const auto& expr = fc->value;
+        if (expr.Size() < 4 || !expr[0].IsString() ||
+            std::strcmp(expr[0].GetString(), "match") != 0)
+            continue;
+        if (!expr[1].IsArray() || expr[1].Size() != 2 ||
+            !expr[1][0].IsString() ||
+            std::strcmp(expr[1][0].GetString(), "get") != 0 ||
+            !expr[1][1].IsString() ||
+            std::strcmp(expr[1][1].GetString(), "name") != 0)
+            continue;  // matches on something other than "name": not ours
+        for (rapidjson::SizeType i = 2; i + 1 < expr.Size(); i += 2) {
+            if (!expr[i].IsString() || !expr[i + 1].IsString())
+                break;  // reached a nested fallback sub-match: stop here
+            const std::string color = normalize_css_color(expr[i + 1].GetString());
+            if (!color.empty())
+                name_to_fill_color_[expr[i].GetString()] = color;
+        }
+    }
+    std::cout << "[SlintMapGL] fill-color table: " << name_to_fill_color_.size()
+              << " name(s) from " << styleUrl << std::endl;
+}
+
+namespace {
 // mbgl::Value (mapbox::feature::value) is a recursive JSON-ish variant;
 // VBM/VLCM feature properties are plain scalars in practice, so nested
 // array/object values just get a placeholder rather than a full recursive
@@ -553,12 +635,12 @@ std::string value_to_string(const mbgl::Value& v) {
 }
 } // namespace
 
-std::string SlintMapGL::query_feature_info(float x, float y) const {
+SlintMapGL::FeatureInfo SlintMapGL::query_feature_info(float x, float y) const {
     if (!frontend)
-        return "";
+        return {};
     mbgl::Renderer* renderer = frontend->getRenderer();
     if (!renderer)
-        return "";
+        return {};
     // Empty options == every layer; filtered to vbm/vlcm below since this
     // panel is specifically about the volcano data, not the bvmap backdrop.
     auto features =
@@ -566,22 +648,26 @@ std::string SlintMapGL::query_feature_info(float x, float y) const {
     for (const auto& f : features) {
         if (f.source != "vbm" && f.source != "vlcm")
             continue;
-        // General-audience readout (2026-08-30, 藤村さん判断): just the
-        // place name, not a raw properties dump. VBM/VLCM's symbol layers
-        // use the Japanese key "名称" (see kitavolca's style.json
-        // text-field expressions) -- most features (fills, contours, water
-        // edges) have no name at all, and those are deliberately skipped
-        // rather than shown with some other field, so the panel only lights
-        // up over something a viewer would recognise as a place.
-        auto it = f.properties.find("名称");
+        // "name" (English key), not "名称" (Japanese key): the latter is
+        // VBM/VLCM's point-label text, already visible as a map annotation,
+        // so showing it again here would be redundant (藤村さん, 2026-08-30).
+        // "name" is the classification-polygon key (e.g. vlcm-natural-fill's
+        // 火口壁/火口原/etc.) -- the thing a hover panel actually adds that
+        // the map's own labels don't already say.
+        auto it = f.properties.find("name");
         if (it == f.properties.end())
             continue;
         std::string name = value_to_string(it->second);
         if (name.empty())
             continue;
-        return name;
+        FeatureInfo info;
+        info.name = name;
+        auto color_it = name_to_fill_color_.find(name);
+        if (color_it != name_to_fill_color_.end())
+            info.fill_color_hex = color_it->second;
+        return info;
     }
-    return "";
+    return {};
 }
 
 // --- Toolbar commands ---
@@ -590,6 +676,7 @@ void SlintMapGL::setStyleUrl(const std::string& url) {
         std::cout << "[SlintMapGL] style change: " << url << std::endl;
         style_url_ = url;
         map->getStyle().loadURL(url);
+        build_fill_color_table(url);
         repaint = true;
     }
 }

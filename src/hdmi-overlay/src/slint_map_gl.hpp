@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <mbgl/map/map.hpp>
 #include <mbgl/map/map_observer.hpp>
 #include <mbgl/renderer/renderer_observer.hpp>
@@ -75,13 +76,23 @@ public:
     void handle_wheel_zoom(float x, float y, float dy);
     void handle_double_click(float x, float y, bool shift);
 
-    // VBM/VLCM feature-attribute lookup under the cursor (hover, no press).
-    // Queries the already-rendered frame (mbgl::Renderer::queryRenderedFeatures,
-    // synchronous, CPU-side) and formats the first vbm/vlcm-sourced feature's
-    // properties into one line; bvmap features are skipped since this is
-    // specifically about the volcano data, not the background map. Empty
-    // string when nothing matches (caller hides the panel in that case).
-    std::string query_feature_info(float x, float y) const;
+    // VBM/VLCM classification-polygon lookup under the cursor (hover, no
+    // press). Queries the already-rendered frame
+    // (mbgl::Renderer::queryRenderedFeatures, synchronous, CPU-side) for the
+    // first vbm/vlcm feature carrying a "name" property (the English key used
+    // by VLCM's classification fill layers, e.g. vlcm-natural-fill's
+    // 火口壁/火口原/etc. -- distinct from "名称", the Japanese key VBM/VLCM's
+    // point labels use for on-map annotation text, which is deliberately
+    // NOT surfaced here since it is already visible as a map label; see
+    // docs/plan.md, 藤村さん 2026-08-30). `fill_color_hex` is the matching
+    // "#rrggbb" from that layer's own fill-color match expression (built by
+    // setup() from style.json), empty when the layer's fill-color is not a
+    // match-on-"name" expression (e.g. a constant color, or no match found).
+    struct FeatureInfo {
+        std::string name;
+        std::string fill_color_hex;
+    };
+    FeatureInfo query_feature_info(float x, float y) const;
     void handle_pan(float dx, float dy);  // keyboard arrow-key pan (screen px)
 
     // Commands from the toolbar (dropdown / buttons / sliders).
@@ -189,6 +200,16 @@ private:
     std::vector<MeshNode> mesh_nodes_;
     bool mesh_dirty_ = false;
     void apply_mesh_nodes();
+
+    // "name" -> "#rrggbb" for every fill layer whose paint.fill-color is a
+    // `["match", ["get","name"], k1, v1, ..., default]` expression (built
+    // once in setup() by walking style.json with rapidjson -- already a
+    // PUBLIC link dependency of mbgl-core, see CMakeLists.txt, so no new
+    // vendor dependency is introduced). Generic across whatever such layers
+    // the style defines, rather than hardcoding kitavolca's own category
+    // list, which would silently drift out of sync with style.json.
+    std::map<std::string, std::string> name_to_fill_color_;
+    void build_fill_color_table(const std::string& styleUrl);
     std::chrono::steady_clock::time_point demo_start_{};
     std::chrono::steady_clock::time_point fps_last_{};
     int fps_frames_ = 0;
