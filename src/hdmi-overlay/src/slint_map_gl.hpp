@@ -7,6 +7,8 @@
 #include <mbgl/map/map.hpp>
 #include <mbgl/map/map_observer.hpp>
 #include <mbgl/renderer/renderer_observer.hpp>
+#include <mbgl/renderer/query.hpp>
+#include <mbgl/util/feature.hpp>
 #include <mbgl/util/run_loop.hpp>
 #include <memory>
 #include <string>
@@ -72,6 +74,14 @@ public:
     void handle_mouse_move(float x, float y, bool pressed);
     void handle_wheel_zoom(float x, float y, float dy);
     void handle_double_click(float x, float y, bool shift);
+
+    // VBM/VLCM feature-attribute lookup under the cursor (hover, no press).
+    // Queries the already-rendered frame (mbgl::Renderer::queryRenderedFeatures,
+    // synchronous, CPU-side) and formats the first vbm/vlcm-sourced feature's
+    // properties into one line; bvmap features are skipped since this is
+    // specifically about the volcano data, not the background map. Empty
+    // string when nothing matches (caller hides the panel in that case).
+    std::string query_feature_info(float x, float y) const;
     void handle_pan(float dx, float dy);  // keyboard arrow-key pan (screen px)
 
     // Commands from the toolbar (dropdown / buttons / sliders).
