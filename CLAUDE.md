@@ -236,5 +236,13 @@ VBM/VLCM PMTilesは `depot.optgeo.org` から直接取得する(`just fetch-data
 
 - [x] `dwg7/kaga0` リポジトリ作成
 - [x] 実機準備(Raspberry Pi 4、コードネーム決定済み — 詳細は`.env`、[0006](docs/decisions/0006-hostname-naming.md))
-- [ ] SDカード書き込み・実機への疎通確認
-- [ ] Stage 1-7(上記セクション7)の段階的な積み上げ
+- [x] SDカード書き込み・実機への疎通確認(`scripts/flash-sdcard.sh`、Trixie+cloud-init。
+      有線・Wi-Fi(Buffalo系AP)両方でSSH到達性を確認済み)
+- [x] Stage 1: RPi OS Liteが起動し、SSHで入れる
+- [x] Stage 2: コンソール(TTY)にHDMI経由で表示できる(JAPANNEXTディスプレイ、
+      HDMI0、`m329 login:`プロンプトを目視確認済み)
+- [ ] Stage 3: DRM/KMS経由でSlintのHello Worldアプリが表示できる
+- [ ] Stage 4: MapLibre Native単体が何らかの形でレンダリングできる
+- [ ] Stage 5: MapLibre NativeとSlintが繋がり、地図がHDMI画面に出る
+- [ ] Stage 6: VBM/VLCM PMTilesを実際に表示する(← v0の成功条件到達点)
+- [ ] Stage 7: systemdで自動起動、電源投入だけで地図が立ち上がる
