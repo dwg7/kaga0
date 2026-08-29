@@ -267,9 +267,12 @@ Stage単位のマイルストーン記録として残す。日々更新される
 - [x] Stage 6: VBM/VLCM PMTilesを実際に表示(← v0の成功条件到達点、
       藤村さん実機確認済み「いけてるね」)。背景地図として国土地理院
       (GSI)の`bvmap`を`pmtiles extract`でオフライン化して追加
-      (北海道bboxのみ300MB、詳細は[docs/decisions/0014](docs/decisions/0014-hdmi-path-zero-copy-gl.md)参照)。
-      フォント/スプライトはGitHub Pages依存のまま(kitavolca由来、既知の
-      残課題、v0成功条件には非該当)
-- [ ] Stage 7: systemdで自動起動、電源投入だけで地図が立ち上がる
-      (`getty@tty1`とのDRM master競合の恒久対応が必要。現状は手動で
-      `systemctl stop getty@tty1`してから起動している)
+      (北海道+稚内・択捉島・渡島大島・龍飛岬までの拡張bbox、z16、2.5GB、
+      詳細は[docs/decisions/0014](docs/decisions/0014-hdmi-path-zero-copy-gl.md)参照)。
+      **フォント・スプライトも含め完全ローカル化済み**(2026-08-30。
+      GitHub Pages依存は解消。ネットワーク切断状態での最終確認は物理作業の
+      ため未実施、藤村さんが後日出勤先で実施予定)
+- [x] Stage 7: systemdで自動起動、電源投入だけで地図が立ち上がる
+      (`just autoexec true/false`、`kaga-map.service`が
+      `Conflicts=getty@tty1.service`を持つためコンソールとの排他は
+      systemdが自動処理。手動での`systemctl stop getty@tty1`は不要になった)
