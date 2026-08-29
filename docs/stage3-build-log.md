@@ -101,6 +101,30 @@ PR #66(`rust/RASPBERRY_PI.md`追加、著者: yuiseki, 2026-06-19マージ)を�
   発生時は`-j2`/`-j1`への切り替えでさらに延びる可能性
 - **合計ETA: 現時点から初回起動確認まで体感3〜6時間**
 
+## swap設定(2026-08-29): ディスクswap追加
+
+デフォルトのswapは**zramのみ**(2GiB、zstd圧縮、`/dev/zram0`)。これはRAM内で
+完結する圧縮swapなので物理RAM(3.7GiB)の枠を超える余裕を作らず、さらに
+圧縮・展開でCPUを消費するため、ビルドでCPUを使い切っている状況とは相性が
+悪い。「ビルド中はswapを切った方がいい」という発想は**逆効果**(物理RAM
+使い切った瞬間に即OOM killerが起動しやすくなる)と判断し、代わりに
+**ディスク上に4GBの一時swapfileを追加**した(zramは残したまま併用):
+
+```bash
+sudo fallocate -l 4G /var/swap-build.img
+sudo chmod 600 /var/swap-build.img
+sudo mkswap /var/swap-build.img
+sudo swapon /var/swap-build.img
+```
+
+優先順位はzram(prio 100)が先、`/var/swap-build.img`(prio -2)は溢れた分の
+受け皿。合計swap 6GiB。ディスク空きは18GB→14GBに減少(SDカード残容量的には
+問題なし)。
+
+**後片付け予定**: Stage 3完走(初回起動確認)後、`sudo swapoff /var/swap-build.img
+&& sudo rm /var/swap-build.img`で外す。本番運用(kiosk用途、長時間稼働)で
+SDカードへの書き込み摩耗を避けるため、常設はしない方針。
+
 ## 未解決・保留中の論点
 
 - **ログインユーザー名 `hfu` vs `niroku`**: `~/.ssh/config`に元々
