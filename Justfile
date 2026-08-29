@@ -38,6 +38,10 @@ setup:
 flash-sdcard device:
     ./scripts/flash-sdcard.sh {{device}}
 
+# configure-wifi: 書き込み済みSDカードにWi-Fi設定を追加(SSID/パスワードは対話入力、Claude Codeには渡らない)
+configure-wifi device:
+    ./scripts/configure-wifi.sh {{device}}
+
 # fetch-data: depot.optgeo.orgからPMTilesを手元のdata/に取得(プレビュー・動作確認用)
 fetch-data:
     ./scripts/fetch-data.sh
