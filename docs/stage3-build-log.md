@@ -219,6 +219,26 @@ CMakeエラーで数時間前に終了していたビルドに、この誤判定
   の形にし、**ログファイル自体に終了コードを書き込む**。どんな監視方法・どのタイミングで
   ログを覗いても、成否が一目で分かるようにする
 
+## 大掃除: 使われていないC++パス用submoduleの削除(2026-08-29)
+
+`maplibre_native`クレートを0.8.2→0.8.7に上げる過程で、ディスク使用状況を再点検したところ、
+**`/opt/maplibre-native-slint/vendor/maplibre-native`(C++参照実装用のgit submodule)が
+Rustビルドから一切参照されていない**ことを確認した。Rustの`maplibre_native`クレートは
+自身の`build.rs`で`~/.cargo/registry`配下に**独自にC++ソースをclone**するため、
+最初にStage 3序盤で時間をかけてcloneした submodule 一式は、実は最初から不要だった
+(cpp/ディレクトリ側のビルドでのみ使われる)。
+
+**削除したもの**:
+- `git submodule deinit -f vendor/maplibre-native`(作業ツリー削除)
+- `.git/modules/vendor/maplibre-native`のキャッシュされた履歴も手動削除(deinitだけでは
+  作業ツリーしか消えず、cloneした履歴自体は`.git/modules`に残り続ける仕様のため)
+- 加えて、バージョンアップで孤立した`~/.cargo/registry/.../maplibre_native-0.8.2`
+  (旧バージョンの内蔵C++ソースコピー、2.6GB)も削除
+
+**効果**: ディスク空きが6.6GB→17GBまで回復(使用率76%→40%)。万が一C++パスが
+将来必要になった場合は`git submodule update --init vendor/maplibre-native`で
+再clone可能(GitHubへのネットワークアクセスが前提)。
+
 ## 未解決・保留中の論点
 
 - **ログインユーザー名 `hfu` vs `niroku`**: `~/.ssh/config`に元々
