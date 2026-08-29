@@ -13,8 +13,8 @@
 
 [Unit]
 Description=kaga - kitavolca air-gapped volcano map (zero-copy GL, HDMI/V3D)
-After=kaga-httpd.service seatd.service
-Requires=kaga-httpd.service seatd.service
+After=seatd.service
+Requires=seatd.service
 Conflicts=getty@tty1.service
 
 [Service]
@@ -26,7 +26,12 @@ SupplementaryGroups=video render input
 # "unable to open database file"警告が出続ける。
 WorkingDirectory=/opt/kaga
 Environment=SLINT_BACKEND=linuxkms
-Environment=MAPLIBRE_STYLE_URL=http://127.0.0.1:8080/style.json
+# pmtiles://file:// (mbgl-core's LocalFileSource, byte-range read()s, no HTTP
+# involved at all) -- verified 2026-08-30 to load style/PMTiles cleanly with
+# fps on par with the busybox-httpd path it replaces. See docs/decisions/0014
+# and docs/plan.md for the investigation. kaga-httpd.service is no longer a
+# dependency of this unit as a result.
+Environment=MAPLIBRE_STYLE_URL=file:///opt/kaga/data/style.json
 # 北海道の火山データが実在する範囲(有珠山付近)。CLAUDE.md v0成功条件「北海道の
 # 主要火山を表示できる」に対応。将来複数拠点運用時は.envなどに切り出す想定。
 Environment=MAPLIBRE_CENTER=42.626,141.537,11
@@ -34,6 +39,9 @@ Environment=MAPLIBRE_CENTER=42.626,141.537,11
 # 副次的にfps改善——同一ビューポートに収まるタイル枚数はズームに依らずほぼ
 # 一定だが、より深いズームのタイルの方が実測で軽かった。docs/decisions/0014参照)
 Environment=MAPLIBRE_ZOOM_BIAS=2.0
+# ステータスバーに解像度/fpsを表示(開発時のみ想定。本番appliance化する際は
+# この行を削除する。2026-08-30藤村さん判断: 当面は開発時なので表示する)
+Environment=MAPLIBRE_DEBUG_INFO=1
 ExecStart=/opt/kaga/bin/maplibre-slint-gl
 Restart=on-failure
 RestartSec=2

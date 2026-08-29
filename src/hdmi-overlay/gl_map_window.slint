@@ -65,6 +65,12 @@ export component MapWindow inherits Window {
     in property <image> wifi-icon;  // set from C++ (grey+X/yellow/green Wi-Fi glyph)
     in property <string> wifi-ssid: "";   // current SSID (C++; truncated to 15 chars)
 
+    // Dev-only readout: "<width>x<height> <fps>fps". Gated by MAPLIBRE_DEBUG_INFO
+    // (main_gl.cpp) so it's off by default for the shipped appliance; kaga is
+    // currently in active tuning, so it's on for now (see docs/plan.md).
+    in property <string> debug-text: "";
+    in property <bool> debug-visible: false;
+
     // Keyboard: green glyph shown while a USB or Bluetooth keyboard is connected.
     in property <bool> kbd-connected: false;
     in property <image> kbd-icon;   // set from C++ (green keyboard PNG)
@@ -261,30 +267,21 @@ export component MapWindow inherits Window {
                     height: 20px;
                     source: root.wifi-icon;
                 }
-                Text {                      // SSID, just right of the Wi-Fi icon
-                    x: parent.width - 240px;
+                // SSID text removed for kaga (2026-08-30, 藤村さん判断): showing
+                // the network name reads as at odds with the offline-appliance
+                // premise. The Wi-Fi icon above still conveys connection state
+                // (grey/yellow/green) without naming the network.
+                Text {                      // dev-only: "<w>x<h> <fps>fps"
+                    x: parent.width - 424px;
                     y: 0px;
-                    // Fixed box so the cluster does not shuffle when the SSID
-                    // changes; `elide` puts an ellipsis on whatever does not
-                    // fit. Eliding by width belongs here rather than in C++,
-                    // which can only count codepoints and would cut a
-                    // proportional font at an arbitrary pixel position.
-                    //
-                    // 88px is the whole gap to the battery icon: "No internet"
-                    // is wider than any SSID here and was being elided at 80.
-                    width: 88px;
+                    width: 160px;
                     height: 100%;
-                    visible: root.net-state != 2 || root.wifi-ssid != "";
-                    // The icon already goes grey, and grey is easy to miss on a
-                    // sunlit deck. Say it in words instead. Whenever there is no
-                    // route this is the fact worth the space -- including
-                    // net-state 1, associated to an AP with no way out, which is
-                    // the state most likely to be misread as working.
-                    text: root.net-state == 2 ? root.wifi-ssid : "No internet";
+                    visible: root.debug-visible;
+                    text: root.debug-text;
                     overflow: elide;
-                    color: white;
+                    color: #ffd24d;
                     font-size: 14px;
-                    horizontal-alignment: left;
+                    horizontal-alignment: right;
                     vertical-alignment: center;
                 }
                 Image {                     // battery level/charge icon (Icons8)

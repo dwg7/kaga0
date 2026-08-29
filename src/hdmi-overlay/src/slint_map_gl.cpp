@@ -428,6 +428,8 @@ void SlintMapGL::render() {
     const auto now = std::chrono::steady_clock::now();
     const double dt = std::chrono::duration<double>(now - fps_last_).count();
     if (dt >= 2.0) {
+        if (fps_frames_ > 0)
+            last_fps_.store(fps_frames_ / dt);
         if (perf_log_ && fps_frames_ > 0) {
             const int n = fps_frames_;
             std::printf(

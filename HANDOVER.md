@@ -2,47 +2,47 @@
 
 kagaの現在の状態。次にこれを引き継ぐ人(人間でもAIでも)向け。
 
-## Status as of 2026-08-30
+## Status as of 2026-08-30(深夜〜早朝、大きく進捗)
 
-- **v0成功条件のコア部分を達成**: VBM/VLCM PMTilesの表示、パン・ズーム、
-  完全オフライン動作(一部フォント/スプライトを除く)、北海道の主要火山
-  (駒ヶ岳・十勝岳・雌阿寒岳)への切り替え、すべて実機(m329)で確認済み。
-  経緯は[DECISIONS.md](DECISIONS.md) D14、詳細は
+- **v0成功条件をほぼ全て達成**: VBM/VLCM表示、パン・ズーム・**マウスホイール
+  ズームも独自実装で実機確認済み**(v0成功条件「ホイール=拡大縮小」達成)、
+  北海道の主要火山(駒ヶ岳・十勝岳・雌阿寒岳)ボタン、すべて実機(m329)で
+  確認済み。経緯は[DECISIONS.md](DECISIONS.md) D14、詳細は
   [docs/decisions/0014](docs/decisions/0014-hdmi-path-zero-copy-gl.md)。
-- **実装は`hdmi/`(zero-copy GL、C++)ベース**、`rust/`実装(旧Stage 3-5)は
-  完全に非採用・削除済み(SPI機体向けレシピをHDMI機体に誤って適用していたと
-  判明したため)。ビルドは`~/poc/mln-slint-cpp`(m329上、ネイティブビルド。
-  クロスコンパイルではない)、ソース差分は`~/poc/pi-maplibre-native-slint-touch/hdmi/`
-  に置いて`build.sh`でoverlay+ビルドする運用。
-- **appliance化(`just autoexec true/false`)が動作する**: `systemd/kaga-httpd.service`
-  (PMTiles配信)+`kaga-map.service`(地図本体、`Conflicts=getty@tty1.service`で
-  コンソールと自動排他)。`scripts/toggle-autoexec.sh`が実体。
-- **背景地図(bvmap、GSI最適化ベクトルタイル)をオフライン化済み**。全国16.9GBから
-  `pmtiles extract`で北海道分(稚内・択捉島まで含む拡張bbox)のみ抽出。
-  **z16まで抽出し直す作業が進行中**(最初z14で抽出してしまい、札幌の建物等
-  z15-17がスタイル側でオーバーズーム前提だったため表示されなかった不具合を
-  修正中——このHANDOVER.md更新時点で転送が完了しているか要確認、
-  `ssh $KAGA_USER@$KAGA_HOST 'ls -la /opt/kaga/data/bvmap.pmtiles*'`で確認できる)。
-- **マウスホイールでのズームを独自実装済み(ビルド成功、実機での動作確認は未実施)**。
-  Slintの`linuxkms`バックエンドが`Axis`(wheel/scroll)イベントを一切処理しない
-  ため、`main_gl.cpp`に生evdev読み取りスレッドを追加し、既存の`net_ssid`と
-  同じ「バックグラウンドスレッドはatomicに書くだけ、UIスレッドの`flyto_timer`
-  (200ms周期)が読んで`smap->handle_wheel_zoom()`を呼ぶ」パターンで実装。
-  `MAPLIBRE_WHEEL_DEVS`で対象デバイスを上書き可能(既定は`REL_WHEEL`能力での
-  自動検出)。
+- **完全オフライン化を達成(2026-08-30)**: PMTiles(vbm/vlcm/bvmap)は
+  `pmtiles://file://`(mbgl-core内蔵`LocalFileSource`、HTTP不使用)、
+  フォント(glyphs、2フォントスタック計25MB)・スプライト(240KB)も
+  GitHub Pagesから取得しローカル化。**busybox httpd(kaga-httpd.service)は
+  廃止**、外部ネットワークへの依存は理論上ゼロになったはず(実機での
+  ネットワーク切断状態での動作確認は物理作業のため藤村さん側でお願いしたい)
+- **背景地図(bvmap、GSI最適化ベクトルタイル)を完全オフライン化・実機反映済み**。
+  全国16.9GBから`pmtiles extract`で北海道+周辺(稚内・択捉島・渡島大島・
+  龍飛岬を含む拡張bbox `139.2,41.1,149.5,45.7`)、z16(GSIスタイルが
+  z17でのオーバーズームを前提にした設計だったため、z14打ち切りでは
+  札幌の建物等が欠落する不具合があり修正済み)、2.5GB
+- **appliance化(`just autoexec true/false`)が動作する**: `kaga-map.service`
+  単体で完結(`Conflicts=getty@tty1.service`でコンソールと自動排他)。
+  `kaga-httpd.service`はfile://切り替えにより不要化、切り戻し用に残置のみ
+- **実装は`hdmi/`(zero-copy GL、C++)ベース**。ビルドは`~/poc/mln-slint-cpp`
+  (m329上、ネイティブビルド)、ソース差分は`src/hdmi-overlay/`に**このリポジトリで
+  バージョン管理**(反映手順は[src/hdmi-overlay/README.md](src/hdmi-overlay/README.md))
+- ステータスバー: Wi-Fi SSID表示は削除(藤村さん判断、オフライン方針との
+  整合性)、`MAPLIBRE_DEBUG_INFO=1`で解像度/fps表示を追加(開発時のみ想定、
+  当面は表示)
 
 ## 次にやること(優先順)
 
-1. **bvmap z16再抽出の転送完了確認 → 実機で動作確認**(このHANDOVER更新の
-   直前に開始した作業。転送先は`/opt/kaga/data/bvmap.pmtiles.new`、確認後
-   `bvmap.pmtiles`にmvして`kaga-map.service`を再起動する)
-2. **マウスホイールズームの実機動作確認**(ビルドは通っているが、
-   `kaga-map.service`再起動後にトラックボールのホイールで実際にズームする
-   か未確認)
-3. その他の未着手項目は[docs/plan.md](docs/plan.md)に優先度・難易度付きで
-   整理済み(火山リストの拡充、ステータスバーへのfps/解像度/CPU・GPU使用率
-   表示、`pmtiles://file://`実験、解像度の段階的引き上げ、マウスオーバー
-   属性表示など)
+[docs/plan.md](docs/plan.md)に優先度・難易度付きで整理済み。特に:
+
+1. **実機でのオフライン動作の物理確認**(Wi-Fi/イーサネット切断状態で
+   地図が問題なく動くか——ネットワーク遮断は物理作業のため藤村さん側)
+2. 火山リストの整備(GSI火山基本図・火山土地条件図サイトが原典、北海道分
+   抽出、気象庁常時観測火山の順で並べる——未着手)
+3. 解像度の段階的引き上げ(1920x1080→2560x1440→4K、fps計測しながら)
+4. 保守・整理(`scripts/deploy.sh`の整理、ディスク管理の定常化等)
+5. VBMのズームレベル割り当ての見直し(bvmapほど作り込まれていない、
+   `MAPLIBRE_ZOOM_BIAS`で対症療法中——着手は保留)
+6. チャレンジ目標: VBM地物へのマウスオーバー属性表示
 
 ## 引き継ぐ人が最初に読むべきもの
 
