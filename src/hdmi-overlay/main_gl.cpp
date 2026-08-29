@@ -1297,6 +1297,9 @@ int main(int /*argc*/, char** /*argv*/) {
         float la_pitch = 1e9f;          // last applied pitch/bearing (change gate)
         float la_bearing = 1e9f;
         double la_lat = 1e9, la_lon = 1e9;   // last applied GPS centre (change gate)
+        // /proc/stat jiffy counters from the previous debug-text sample, for
+        // the CPU% delta below (-1 = no previous sample yet).
+        long long prev_cpu_total = -1, prev_cpu_idle = -1;
     };
     auto ss = std::make_shared<SaverState>();
 
@@ -1588,15 +1591,60 @@ int main(int /*argc*/, char** /*argv*/) {
                         smap->handle_wheel_zoom(*hover_x, *hover_y, dy);
                 }
 
-                // Dev-only status-bar readout: "<w>x<h> <fps>fps". Gated by
-                // MAPLIBRE_DEBUG_INFO (debug_info_on, read once at startup
-                // below) -- off by default for the shipped appliance; on for
-                // now while kaga is under active perf tuning (docs/plan.md).
+                // Dev-only status-bar readout: "<w>x<h> <fps>fps <cpu>%cpu
+                // <temp>°C". Gated by MAPLIBRE_DEBUG_INFO (debug_info_on,
+                // read once at startup below) -- off by default for the
+                // shipped appliance; on for now while kaga is under active
+                // perf tuning (docs/plan.md).
                 if (debug_info_on) {
                     auto sz = win->window().size();
-                    char buf[32];
-                    std::snprintf(buf, sizeof(buf), "%ux%u %.0ffps", sz.width,
-                                  sz.height, smap->last_fps());
+
+                    // CPU%: share of jiffies NOT idle since the previous
+                    // sample (~240ms apart, this block's own cadence).
+                    // /proc/stat's first line is "cpu <user> <nice> <system>
+                    // <idle> <iowait> <irq> <softirq> <steal> ...".
+                    float cpu_pct = -1.0f;
+                    {
+                        std::ifstream sf("/proc/stat");
+                        std::string label;
+                        long long user = 0, nice = 0, system = 0, idle = 0,
+                                  iowait = 0, irq = 0, softirq = 0, steal = 0;
+                        if (sf >> label >> user >> nice >> system >> idle >>
+                            iowait >> irq >> softirq >> steal) {
+                            const long long total = user + nice + system + idle +
+                                                    iowait + irq + softirq + steal;
+                            const long long idle_all = idle + iowait;
+                            if (ss->prev_cpu_total >= 0) {
+                                const long long dt = total - ss->prev_cpu_total;
+                                if (dt > 0)
+                                    cpu_pct = 100.0f *
+                                              (1.0f - float(idle_all - ss->prev_cpu_idle) /
+                                                          float(dt));
+                            }
+                            ss->prev_cpu_total = total;
+                            ss->prev_cpu_idle = idle_all;
+                        }
+                    }
+
+                    // SoC temperature (RPi: thermal_zone0 is the CPU/GPU die,
+                    // millidegrees C). GPU load itself has no equivalent
+                    // /sys readout on RPi (docs/plan.md, still 要調査).
+                    float temp_c = -1.0f;
+                    {
+                        std::ifstream tf("/sys/class/thermal/thermal_zone0/temp");
+                        int milli = 0;
+                        if (tf >> milli)
+                            temp_c = milli / 1000.0f;
+                    }
+
+                    char buf[48];
+                    int n = std::snprintf(buf, sizeof(buf), "%ux%u %.0ffps",
+                                          sz.width, sz.height, smap->last_fps());
+                    if (cpu_pct >= 0.0f && n > 0 && n < (int)sizeof(buf))
+                        n += std::snprintf(buf + n, sizeof(buf) - n, " %.0f%%cpu",
+                                           cpu_pct);
+                    if (temp_c >= 0.0f && n > 0 && n < (int)sizeof(buf))
+                        std::snprintf(buf + n, sizeof(buf) - n, " %.0f°C", temp_c);
                     win->set_debug_text(slint::SharedString(buf));
                 }
 
@@ -1604,8 +1652,22 @@ int main(int /*argc*/, char** /*argv*/) {
                 // position recorded by on_mouse_hovered above.
                 if (*hover_dirty) {
                     *hover_dirty = false;
-                    win->set_feature_info_text(slint::SharedString(
-                        smap->query_feature_info(*hover_x, *hover_y)));
+                    auto info = smap->query_feature_info(*hover_x, *hover_y);
+                    win->set_feature_info_text(slint::SharedString(info.name));
+                    // "#rrggbb" -> slint::Color, transparent when the layer's
+                    // fill-color wasn't a match-on-"name" expression (the
+                    // swatch then just blends into the bar, panel still
+                    // reads fine on the text alone).
+                    slint::Color swatch;
+                    if (info.fill_color_hex.size() == 7) {
+                        unsigned r = 0, g = 0, b = 0;
+                        std::sscanf(info.fill_color_hex.c_str(), "#%02x%02x%02x",
+                                    &r, &g, &b);
+                        swatch = slint::Color::from_rgb_uint8(
+                            static_cast<uint8_t>(r), static_cast<uint8_t>(g),
+                            static_cast<uint8_t>(b));
+                    }
+                    win->set_feature_info_color(swatch);
                 }
 
                 // Status-bar Wi-Fi indicator (polled in thread (c2) above).
