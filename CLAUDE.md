@@ -70,6 +70,11 @@ SlintのLinuxKMSバックエンドは、DRM dumb buffer方式(フォールバッ
 libinput/libudevでの入力処理、libseatによるroot不要アクセス(または `backend-linuxkms-noseat` で
 root権限アクセス)をサポートしている。
 
+**既知の技術的制約**: RPiのVideoCore GPUはmaplibre-nativeが要求するハードウェアGLES3パスを
+持たず、Mesaのソフトウェアラスタライザ(llvmpipe)へのフォールバックが必須
+(`LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`)。上記の参照実装がRPi4/Trixieで
+実機検証済み。詳細・実行時の環境変数は[docs/decisions/0010](docs/decisions/0010-software-gl-required.md)参照。
+
 ---
 
 ## 4. v0のスコープ
@@ -198,10 +203,10 @@ SSH経由で取得できる診断コマンド一式を早期に用意する。�
 1. `cp .env.example .env` して `KAGA_HOST`・`SSH_PUBKEY_FILE` 等の実値を設定
    (ホスト名の決め方は[0006](docs/decisions/0006-hostname-naming.md)、実値を`.env`に置く理由は
    [0007](docs/decisions/0007-secrets-policy.md)参照)
-2. OS: **Raspberry Pi OS (Legacy, 64-bit) Lite**(Bookworm。GUIデスクトップ不要、軽量、
-   Browserless構成に合う。最新のTrixieベース版ではなくLegacyを使う理由は
-   [0008](docs/decisions/0008-legacy-bookworm-image.md)参照)
-3. ホスト名・ユーザー・SSH公開鍵は `custom.toml`(Bookworm系の起動時カスタマイズ機構)経由で設定。
+2. OS: **Raspberry Pi OS Lite (64-bit)**(Trixie。GUIデスクトップ不要、軽量、
+   Browserless構成に合う。一度はLegacy(Bookworm)を選んだが撤回した経緯は
+   [0008](docs/decisions/0008-legacy-bookworm-image.md)→[0009](docs/decisions/0009-trixie-and-cloudinit.md)参照)
+3. ホスト名・ユーザー・SSH公開鍵は `user-data`(cloud-init。Trixie系の起動時カスタマイズ機構)経由で設定。
    **公開鍵認証のみ有効化し、パスワード認証は無効化する**(デフォルトの`pi`ユーザーは存在しないため
    ユーザー作成が必須)
 4. SDカードを挿し、電源投入(RPi 4Bは5V/3A USB-C)
