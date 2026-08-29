@@ -2,23 +2,31 @@
 
 対象: Raspberry Pi 4B(初期ターゲット)。詳細な設計背景は [CLAUDE.md](../CLAUDE.md) を参照。
 
-## 1. SDカード書き込み
+## 0. 事前準備
 
-`scripts/flash-sdcard.sh` を使うと、OS書き込みとhostname/SSH設定を一括で行える。
+`.env` に実機のホスト名等を設定する(まだの場合):
 
 ```bash
-diskutil list                          # SDカードのデバイス名(/dev/diskN)を確認
-./scripts/flash-sdcard.sh /dev/diskN
+cp .env.example .env
+$EDITOR .env   # KAGA_HOST, KAGA_USER, SSH_PUBKEY_FILE を実値に
+just setup     # 必須ツールと.envの有無を確認
 ```
 
-手動で行う場合は [Raspberry Pi Imager](https://www.raspberrypi.com/software/) で:
+ホスト名の決め方は [docs/decisions/0006-hostname-naming.md](decisions/0006-hostname-naming.md)、
+`.env`をgit管理外にする理由は [docs/decisions/0007-secrets-policy.md](decisions/0007-secrets-policy.md) 参照。
 
-1. OS: **Raspberry Pi OS Lite (64-bit)**
-2. 歯車アイコンから編集:
-   - ホスト名: `kaga0`
-   - ユーザー名・パスワードを設定(デフォルトの`pi`ユーザーは存在しない)
-   - SSH有効化・公開鍵認証を推奨
-   - Wi-Fiは保険として設定(有線があればそちらが優先)
+## 1. SDカード書き込み
+
+```bash
+diskutil list              # SDカードのデバイス名(/dev/diskN)を確認
+just flash-sdcard /dev/diskN
+```
+
+`scripts/flash-sdcard.sh`(`just flash-sdcard`)が、OS書き込み・hostname設定・SSH公開鍵の
+登録・パスワード認証の無効化を一括で行う。SSH公開鍵は`.env`の`SSH_PUBKEY_FILE`を使う
+(公開鍵認証のみでログインする方針の背景は [CLAUDE.md セクション8](../CLAUDE.md) 参照)。
+
+⚠ 指定したデバイスを完全に消去する破壊的操作。`diskutil list`の出力を必ず自分の目で確認してから実行する。
 
 ## 2. 起動・疎通確認
 
@@ -27,7 +35,8 @@ diskutil list                          # SDカードのデバイス名(/dev/disk
 3. 疎通確認:
 
 ```bash
-ssh <ユーザー名>@kaga0.local
+just ssh
+# または: ssh $KAGA_USER@$KAGA_HOST
 ```
 
 `.local`が引けない場合は [network-troubleshooting.md](network-troubleshooting.md) を参照。
@@ -43,8 +52,9 @@ ssh <ユーザー名>@kaga0.local
 実機上、またはSSH経由で診断情報を収集できる:
 
 ```bash
-./scripts/diagnose.sh                          # 実機上で直接実行
-./scripts/diagnose.sh --ssh user@kaga0.local   # 手元のMacからSSH経由で実行
+just diagnose
+# または: ./scripts/diagnose.sh --ssh $KAGA_USER@$KAGA_HOST
+# 実機上で直接実行する場合: ./scripts/diagnose.sh
 ```
 
 出力をそのままClaude Codeとのセッションに貼り付けると、原因特定を試みられる。

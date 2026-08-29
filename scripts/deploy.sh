@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# ビルド済みkagaバイナリとデータをRPi実機へデプロイし、サービスを再起動する。
+# ビルド済みkagaバイナリを実機へ転送し、systemdサービスを有効化する。
+#
+# データ(PMTiles)は本スクリプトでは転送しない。実機自身がdepot.optgeo.orgから
+# 直接取得する(`just fetch-data-remote` / `scripts/fetch-data.sh --remote`)。
+# 理由は docs/decisions/0005-depot-optgeo-org.md 参照。
 #
 # 前提: src/ 以下にビルド成果物が存在すること(現時点ではまだクロスコンパイル
 # パイプライン未整備 — TODO: aarch64向けビルド手順が固まり次第ここから呼び出す)。
@@ -7,12 +11,20 @@
 # 単一バイナリを想定したプレースホルダー。
 #
 # 使い方:
-#   ./scripts/deploy.sh <user>@kaga0.local
+#   ./scripts/deploy.sh <user>@<host>
+# (KAGA_USER/KAGA_HOSTが.envにあれば引数省略可。Justfile経由の`just deploy`推奨)
 
 set -euo pipefail
 
-TARGET="${1:?使い方: deploy.sh <user>@kaga0.local}"
 KAGA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[ -f "${KAGA_ROOT}/.env" ] && source "${KAGA_ROOT}/.env"
+
+TARGET="${1:-}"
+if [ -z "${TARGET}" ] && [ -n "${KAGA_USER:-}" ] && [ -n "${KAGA_HOST:-}" ]; then
+    TARGET="${KAGA_USER}@${KAGA_HOST}"
+fi
+: "${TARGET:?使い方: deploy.sh <user>@<host> (または.envにKAGA_USER/KAGA_HOSTを設定)}"
+
 BIN="${KAGA_ROOT}/target/aarch64-unknown-linux-gnu/release/kaga"
 
 if [ ! -f "${BIN}" ]; then
@@ -24,10 +36,6 @@ fi
 echo "=== バイナリを ${TARGET} へ転送 ==="
 ssh "${TARGET}" "sudo mkdir -p /opt/kaga && sudo chown \$(whoami) /opt/kaga"
 rsync --progress "${BIN}" "${TARGET}:/opt/kaga/kaga"
-
-echo "=== データ(PMTiles)を転送 ==="
-rsync --progress "${KAGA_ROOT}"/data/*.pmtiles "${TARGET}:/opt/kaga/data/" 2>&1 \
-    || echo "⚠ data/*.pmtiles が見つかりません。先に scripts/fetch-data.sh を実行してください"
 
 echo "=== systemdユニットを転送・有効化 ==="
 scp "${KAGA_ROOT}/systemd/kaga.service" "${TARGET}:/tmp/kaga.service"

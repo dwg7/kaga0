@@ -116,16 +116,17 @@ root権限アクセス)をサポートしている。
 dwg7/kaga0/
 ├── README.md                 # kaga v0の成功条件、issue #987へのリンク
 ├── CLAUDE.md                  # このファイル
+├── Justfile                    # タスクランナー(採用理由はdocs/decisions参照)
+├── .env.example                # 環境固有の値のテンプレート(.envはgit管理外)
 ├── docs/
 │   ├── hardware-setup.md      # RPi物理セットアップ手順
 │   ├── network-troubleshooting.md
 │   └── decisions/              # ADR的な意思決定記録
-├── flake.nix (or setup.sh)    # 再現可能な開発環境
 ├── src/                        # maplibre-native-slint を vendor/submodule で参照
 ├── data/
 │   └── .gitignore              # PMTiles本体はリポジトリに含めない(容量大)
 ├── scripts/
-│   ├── fetch-data.sh           # kitavolcaからVBM/VLCM PMTilesを取得
+│   ├── fetch-data.sh           # depot.optgeo.orgからVBM/VLCM PMTilesを取得
 │   ├── flash-sdcard.sh         # SDカードイメージ焼き込み自動化(rpi-imager --cli)
 │   ├── deploy.sh                # RPiへのデプロイ
 │   └── diagnose.sh              # 実機の状態診断コマンド一式
@@ -139,6 +140,12 @@ dwg7/kaga0/
 - `docs/decisions/`はADR(Architecture Decision Record)形式で、後から本人も含めて
   経緯を追えるようにする。issue本文に既にある判断(なぜNative実装か、なぜTerrainをv0スコープ外にしたか)
   に加え、実装が進むにつれ増える判断をここに残す。
+- タスクランナーには`Justfile`(Makeではなく)を採用。理由は
+  [docs/decisions/0007-secrets-policy.md](docs/decisions/0007-secrets-policy.md)参照(dotenv対応が決め手)。
+- 実機のホスト名・ユーザー名・SSH鍵ファイル名など環境固有の値は`.env`(git管理外)に置き、
+  リポジトリには`.env.example`のプレースホルダーのみを残す。理由・詳細は
+  [docs/decisions/0006](docs/decisions/0006-hostname-naming.md)・[0007](docs/decisions/0007-secrets-policy.md)参照。
+  新しいセッションはまず`.env`の有無を確認し(`just setup`)、なければ`.env.example`から作る。
 
 ---
 
@@ -185,44 +192,42 @@ SSH経由で取得できる診断コマンド一式を早期に用意する。�
 
 ## 8. Raspberry Pi 初期セットアップ手順
 
-Raspberry Pi Imager (raspberrypi.com/software) を使い、実機を触る前にSDカード上で設定を完了させる。
+`scripts/flash-sdcard.sh`(`just flash-sdcard <device>`)で自動化済み。手順の詳細・背景は
+[docs/hardware-setup.md](docs/hardware-setup.md)参照。要点:
 
-1. OS選択: **Raspberry Pi OS Lite (64-bit)**(GUIデスクトップ不要、軽量、Browserless構成に合う)
-2. カスタマイズ設定:
-   - **ホスト名**: `kaga0`
-   - **ユーザー**: 任意のユーザー名・パスワード(デフォルトの`pi`ユーザーは存在しない)
-   - **Wi-Fi**: 保険として設定(有線接続があればそちらが優先される)
-   - **リモートアクセス**: SSH有効化。**公開鍵認証を推奨**(パスワード認証は総当たり攻撃に弱い)
-3. 書き込み実行(`/boot/firmware/firstrun.sh`機構により初回起動時に自動適用される)
+1. `cp .env.example .env` して `KAGA_HOST`・`SSH_PUBKEY_FILE` 等の実値を設定
+   (ホスト名の決め方は[0006](docs/decisions/0006-hostname-naming.md)、実値を`.env`に置く理由は
+   [0007](docs/decisions/0007-secrets-policy.md)参照)
+2. OS: **Raspberry Pi OS Lite (64-bit)**(GUIデスクトップ不要、軽量、Browserless構成に合う)
+3. ホスト名・ユーザー・SSH公開鍵は `custom.toml`(Bookworm系の起動時カスタマイズ機構)経由で設定。
+   **公開鍵認証のみ有効化し、パスワード認証は無効化する**(デフォルトの`pi`ユーザーは存在しないため
+   ユーザー作成が必須)
 4. SDカードを挿し、電源投入(RPi 4Bは5V/3A USB-C)
-5. 疎通確認: `ssh <ユーザー名>@kaga0.local`
+5. 疎通確認: `ssh $KAGA_USER@$KAGA_HOST`(`just ssh`)
 
 ### ネットワーク疎通トラブルシューティング
 
-`.local`名前解決はmDNS(Avahi)依存。失敗する場合の切り分け:
-
-```bash
-# IPアドレスで疎通確認(mDNSを迂回)
-arp -a | grep -i "b8:27:eb\|dc:a6:32\|e4:5f:01"   # RPi Foundation割当MACアドレス
-
-# IP直打ちでSSH確認
-ssh <ユーザー名>@<見つけたIP>
-
-# RPi側でAvahiの状態確認(SSHで入れたら)
-systemctl status avahi-daemon
-hostname
-```
+`.local`名前解決はmDNS(Avahi)依存。詳細な切り分け手順は
+[docs/network-troubleshooting.md](docs/network-troubleshooting.md)参照。
 
 **留意点**: 省庁・自治体・防災機関ネットワークでは、mDNS(UDP 5353)がブロックされている可能性が高い
 (GitHub Pagesアクセス制限と同根の問題)。開発時の疎通確認と、実配備先での接続性検証は別問題として扱う。
 
-将来的にkaga1、kaga2と複数台展開する際に備え、`scripts/flash-sdcard.sh`として
-`rpi-imager --cli`によるSDカード書き込みの自動化を検討する。
+将来的にkaga1、kaga2と複数台展開する際は、それぞれの実機ごとに個体コードネームと
+`.env`を用意する([0006](docs/decisions/0006-hostname-naming.md)参照)。
 
 ---
 
-## 9. 現時点でのステータス
+## 9. データ配布
+
+VBM/VLCM PMTilesは `depot.optgeo.org` から直接取得する(`just fetch-data` で開発機へ、
+`just fetch-data-remote` で実機へ直接)。背景は[0005](docs/decisions/0005-depot-optgeo-org.md)参照。
+
+---
+
+## 10. 現時点でのステータス
 
 - [x] `dwg7/kaga0` リポジトリ作成
-- [ ] SDカード書き込み・`kaga0.local`への疎通確認
+- [x] 実機準備(Raspberry Pi 4、コードネーム決定済み — 詳細は`.env`、[0006](docs/decisions/0006-hostname-naming.md))
+- [ ] SDカード書き込み・実機への疎通確認
 - [ ] Stage 1-7(上記セクション7)の段階的な積み上げ
