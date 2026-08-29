@@ -105,9 +105,17 @@ echo
 echo "=== OSイメージ書き込み: ${OS_IMAGE} → ${DEVICE} ==="
 rpi-imager --cli "${OS_URL}" "${DEVICE}" --sha256 "${OS_SHA256}"
 
+# rpi-imagerが書き込み後にbootパーティションを自動マウントしないことがある
+# (macOS 26実機で確認: diskutil mountDiskを叩かない限りマウントされなかった)。
 BOOT_MOUNT="/Volumes/bootfs"
+diskutil mountDisk "${DEVICE}" >/dev/null 2>&1 || true
+for _ in 1 2 3 4 5; do
+    [ -d "${BOOT_MOUNT}" ] && break
+    sleep 1
+done
 if [ ! -d "${BOOT_MOUNT}" ]; then
-    echo "❌ ${BOOT_MOUNT} が見つかりません。書き込み直後に自動マウントされるまで少し待ってから再実行してください" >&2
+    echo "❌ ${BOOT_MOUNT} が見つかりません。" >&2
+    echo "   'diskutil mountDisk ${DEVICE}' を試すか、SDカードを一度抜き差ししてから再実行してください" >&2
     exit 1
 fi
 
