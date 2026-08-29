@@ -166,12 +166,8 @@ users:
 # Raspberry Pi OSはSSHサーバーを既定で無効化していることがあり、
 # users.ssh_authorized_keys の指定だけではサービスが起動しなかった
 # (実機で確認: ping通/ssh connection refused)。runcmdで明示的に有効化・起動する。
-# Wi-Fiの国コード(regulatory domain)未設定は、Wi-Fiが一切スキャン/接続できなくなる
-# 既知の落とし穴なので、raspi-configで明示的に設定しておく(こちらは実機未検証。
-# 有線が主でWi-Fiは保険という位置づけのため、まずSSHで入れることを優先する)。
 runcmd:
   - systemctl enable --now ssh
-  - raspi-config nonint do_wifi_country JP
 """
 with open(out_path, "w") as f:
     f.write(doc)
