@@ -125,6 +125,22 @@ sudo swapon /var/swap-build.img
 && sudo rm /var/swap-build.img`で外す。本番運用(kiosk用途、長時間稼働)で
 SDカードへの書き込み摩耗を避けるため、常設はしない方針。
 
+## Slint単体Hello Worldでの並行検証(2026-08-29)
+
+本命のmaplibre-native-slint(巨大なC++ vendorツリーを含む)のビルドを待つ間、
+**Slint単体のHello World**を別ディレクトリ(`~/slint-hello`)で並行して試すことで、
+DRM/KMS(`linuxkms-noseat`)+ EGL software GL(llvmpipe)の経路そのものを
+先に検証する。本命のmaplibre-native-slintの`rust/Cargo.toml`もdefault-featuresを
+絞っていないため、Slint側の全バックエンド(winit経由のWayland/X11も含む)向け依存が
+まとめて降ってくる。同じ構成でつまずくシステム依存(pkg-config経由)を先に洗い出せる
+副次効果がある。
+
+**追加で必要だったaptパッケージ**(pkg-configエラーで判明、上記「実施済みのセットアップ手順」に追加):
+```bash
+sudo apt-get install -y libfontconfig1-dev libudev-dev libinput-dev \
+    libdrm-dev libgbm-dev libxkbcommon-dev libwayland-dev
+```
+
 ## ディスク逼迫時の対応方針(2026-08-29)
 
 サブモジュールcloneが完了した時点で空き9.1GB(全39ネストサブモジュール込みで`.git`は6.0GBに拡大)。
