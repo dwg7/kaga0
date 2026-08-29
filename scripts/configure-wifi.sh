@@ -3,6 +3,10 @@
 # (cloud-init network-config)だけを追加で書き込む。
 #
 # 有線接続を主、Wi-Fiは保険として使う方針(CLAUDE.md参照)だが、設定しておく。
+# network-configの書式はRaspberry Pi公式記事の実例に準拠:
+# https://www.raspberrypi.com/news/cloud-init-on-raspberry-pi-os/
+# (renderer: NetworkManager / regulatory-domain / optional: true が要点。
+# optional: trueが無いと、Wi-Fi接続待ちで起動がブロックされる — 実機で確認済み)
 # SSIDは電波として周囲に公開されている情報なので対話プロンプトでも問題ないが、
 # パスワードはこのスクリプトの実行者(藤村さん)の端末で直接入力してもらうか、
 # .env(git管理外)にWIFI_SSID/WIFI_PASSWORDとして書いてもらう。
@@ -53,11 +57,14 @@ out_path = sys.argv[1]
 doc = f"""network:
   version: 2
   wifis:
+    renderer: NetworkManager
     wlan0:
       dhcp4: true
+      regulatory-domain: "JP"
       access-points:
         {json.dumps(ssid)}:
           password: {json.dumps(password)}
+      optional: true
 """
 with open(out_path, "w") as f:
     f.write(doc)
