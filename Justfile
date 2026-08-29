@@ -54,6 +54,12 @@ fetch-data-remote:
 deploy:
     ./scripts/deploy.sh
 
+# autoexec: 起動時自動起動(appliance化)のON/OFF切り替え
+#   just autoexec true   起動時に地図を自動起動(getty@tty1は自動停止)
+#   just autoexec false  自動起動を止め、コンソールログイン(SSH開発)に戻す
+autoexec mode:
+    ./scripts/toggle-autoexec.sh {{mode}}
+
 # diagnose: 実機の状態診断(ssh経由)
 diagnose:
     ./scripts/diagnose.sh --ssh

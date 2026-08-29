@@ -4,7 +4,9 @@ The first implementation of Kitavolca Air-Gapped Appliance (kaga) — a portable
 network-independent appliance for displaying VBM/VLCM volcano vector tiles produced by
 [kitavolca](https://github.com/hfu/kitavolca).
 
-See [CLAUDE.md](CLAUDE.md) for full project context. Source: [UNopenGIS/7#987](https://github.com/UNopenGIS/7/issues/987).
+See [CLAUDE.md](CLAUDE.md) for full project context, [HANDOVER.md](HANDOVER.md) for the
+current state, [DECISIONS.md](DECISIONS.md) for why it's built this way, and
+[docs/plan.md](docs/plan.md) for what's next. Source: [UNopenGIS/7#987](https://github.com/UNopenGIS/7/issues/987).
 
 ## v0 success criteria
 

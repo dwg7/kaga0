@@ -1,0 +1,44 @@
+# kaga: 火山地図(maplibre-slint-gl、zero-copy GL/HDMI)を自動起動するsystemdユニット。
+#
+# 採用の経緯・技術的背景は docs/decisions/0014-hdmi-path-zero-copy-gl.md 参照
+# (Yuiseki氏のpi-maplibre-native-slint-touch/hdmi実装を参照・移植したもの)。
+#
+# Conflicts=getty@tty1.service: 本ユニットとgetty@tty1は同じHDMI画面のDRM master
+# を取り合う(seatd経由でも、fbconがtty1で有効な間はmasterを握ったまま競合する)。
+# systemdのConflicts=は双方向に効くため、このユニット起動時にgetty@tty1が自動停止し、
+# 停止すればgetty@tty1が復帰できる(`just autoexec false`で明示的に戻す)。
+#
+# ExecStart のパスは `just autoexec true` がビルド成果物を /opt/kaga/bin/ へ
+# コピーしてから有効化する前提(開発中のビルドツリー ~/poc/... には依存しない)。
+
+[Unit]
+Description=kaga - kitavolca air-gapped volcano map (zero-copy GL, HDMI/V3D)
+After=kaga-httpd.service seatd.service
+Requires=kaga-httpd.service seatd.service
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+User=__KAGA_USER__
+SupplementaryGroups=video render input
+# mbgl-coreはcache.sqliteを相対パスで開く(slint_map_gl.cpp参照)。
+# WorkingDirectory未指定だとsystemdのデフォルト(/)で書き込めず、
+# "unable to open database file"警告が出続ける。
+WorkingDirectory=/opt/kaga
+Environment=SLINT_BACKEND=linuxkms
+Environment=MAPLIBRE_STYLE_URL=http://127.0.0.1:8080/style.json
+# 北海道の火山データが実在する範囲(有珠山付近)。CLAUDE.md v0成功条件「北海道の
+# 主要火山を表示できる」に対応。将来複数拠点運用時は.envなどに切り出す想定。
+Environment=MAPLIBRE_CENTER=42.626,141.537,11
+# 実効ズームを+2して描画(画面解像度に対しVBMがやや粗く見える問題への対処、
+# 副次的にfps改善——同一ビューポートに収まるタイル枚数はズームに依らずほぼ
+# 一定だが、より深いズームのタイルの方が実測で軽かった。docs/decisions/0014参照)
+Environment=MAPLIBRE_ZOOM_BIAS=2.0
+ExecStart=/opt/kaga/bin/maplibre-slint-gl
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
