@@ -537,6 +537,53 @@ void SlintMapGL::handle_double_click(float x, float y, bool shift) {
     repaint = true;
 }
 
+namespace {
+// mbgl::Value (mapbox::feature::value) is a recursive JSON-ish variant;
+// VBM/VLCM feature properties are plain scalars in practice, so nested
+// array/object values just get a placeholder rather than a full recursive
+// dump (attribute panel is one line, not a debugger view).
+std::string value_to_string(const mbgl::Value& v) {
+    return v.match([](const mbgl::NullValue&) -> std::string { return "null"; },
+                   [](bool b) -> std::string { return b ? "true" : "false"; },
+                   [](uint64_t n) -> std::string { return std::to_string(n); },
+                   [](int64_t n) -> std::string { return std::to_string(n); },
+                   [](double d) -> std::string { return std::to_string(d); },
+                   [](const std::string& s) -> std::string { return s; },
+                   [](const auto&) -> std::string { return "[...]"; });
+}
+} // namespace
+
+std::string SlintMapGL::query_feature_info(float x, float y) const {
+    if (!frontend)
+        return "";
+    mbgl::Renderer* renderer = frontend->getRenderer();
+    if (!renderer)
+        return "";
+    // Empty options == every layer; filtered to vbm/vlcm below since this
+    // panel is specifically about the volcano data, not the bvmap backdrop.
+    auto features =
+        renderer->queryRenderedFeatures(mbgl::ScreenCoordinate{x, y}, {});
+    for (const auto& f : features) {
+        if (f.source != "vbm" && f.source != "vlcm")
+            continue;
+        // General-audience readout (2026-08-30, 藤村さん判断): just the
+        // place name, not a raw properties dump. VBM/VLCM's symbol layers
+        // use the Japanese key "名称" (see kitavolca's style.json
+        // text-field expressions) -- most features (fills, contours, water
+        // edges) have no name at all, and those are deliberately skipped
+        // rather than shown with some other field, so the panel only lights
+        // up over something a viewer would recognise as a place.
+        auto it = f.properties.find("名称");
+        if (it == f.properties.end())
+            continue;
+        std::string name = value_to_string(it->second);
+        if (name.empty())
+            continue;
+        return name;
+    }
+    return "";
+}
+
 // --- Toolbar commands ---
 void SlintMapGL::setStyleUrl(const std::string& url) {
     if (map) {

@@ -649,6 +649,32 @@ int main(int /*argc*/, char** /*argv*/) {
     win->global<MMapAdapter>().on_wheel_zoomed(
         [=](float x, float y, float dy) { smap->handle_wheel_zoom(x, y, dy); });
 
+    // VBM/VLCM feature-attribute readout (kaga challenge goal, 2026-08-30).
+    // on_mouse_hovered fires on the UI thread just like on_mouse_moved above
+    // (no thread-safety concern, unlike the evdev-sourced wheel_clicks
+    // below) -- it just records the latest position. saver_timer (60ms)
+    // does the actual queryRenderedFeatures call, which is a synchronous
+    // CPU-side lookup against the already-rendered frame and not something
+    // we want running once per pixel of mouse movement.
+    auto hover_x = std::make_shared<float>(
+        static_cast<float>(win->window().size().width) / 2.0f);
+    auto hover_y = std::make_shared<float>(
+        static_cast<float>(win->window().size().height) / 2.0f);
+    auto hover_dirty = std::make_shared<bool>(false);
+    win->global<MMapAdapter>().on_mouse_hovered([=](float x, float y) {
+        *hover_x = x;
+        *hover_y = y;
+        *hover_dirty = true;
+    });
+
+    // Shutdown button (kaga addition). No confirmation dialog: kaga is meant
+    // to be carried keyboardless/networkless, so the point is making a clean
+    // shutdown at least as easy as pulling the plug, not harder. The service
+    // user already has passwordless sudo (verified 2026-08-30, needed
+    // elsewhere too), so this runs directly.
+    win->on_request_shutdown(
+        []() { std::system("sudo systemctl poweroff"); });
+
     // Physical mouse-wheel zoom (kaga-specific; not part of the upstream app).
     // Slint's linuxkms backend only forwards Motion/MotionAbsolute/Button
     // libinput events (internal/backends/linuxkms/calloop_backend/input.rs);
@@ -1548,13 +1574,18 @@ int main(int /*argc*/, char** /*argv*/) {
                 // each, same as the on-screen +/- buttons); partial
                 // cancellation within a tick (scroll up then down) is
                 // intentional -- it nets out rather than double-stepping.
+                // Zooms toward the cursor (hover_x/hover_y, same tracking the
+                // feature-attribute readout uses) rather than the screen
+                // centre, matching modern MapLibre GL JS's wheel-zoom feel
+                // (2026-08-30, 藤村さん要望). The evdev wheel reader has no
+                // cursor-position signal of its own -- libinput reports
+                // relative wheel clicks, not an absolute pointer location --
+                // so this reuses whatever position Slint's own pointer
+                // dispatch last reported via on_mouse_hovered.
                 if (int clicks = wheel_clicks->exchange(0)) {
-                    auto sz = win->window().size();
-                    float cx = static_cast<float>(sz.width) / 2.0f;
-                    float cy = static_cast<float>(sz.height) / 2.0f;
                     float dy = clicks > 0 ? -1.0f : 1.0f;  // see reader thread comment
                     for (int i = 0; i < std::abs(clicks); ++i)
-                        smap->handle_wheel_zoom(cx, cy, dy);
+                        smap->handle_wheel_zoom(*hover_x, *hover_y, dy);
                 }
 
                 // Dev-only status-bar readout: "<w>x<h> <fps>fps". Gated by
@@ -1567,6 +1598,14 @@ int main(int /*argc*/, char** /*argv*/) {
                     std::snprintf(buf, sizeof(buf), "%ux%u %.0ffps", sz.width,
                                   sz.height, smap->last_fps());
                     win->set_debug_text(slint::SharedString(buf));
+                }
+
+                // VBM/VLCM feature-attribute readout: drain the latest hover
+                // position recorded by on_mouse_hovered above.
+                if (*hover_dirty) {
+                    *hover_dirty = false;
+                    win->set_feature_info_text(slint::SharedString(
+                        smap->query_feature_info(*hover_x, *hover_y)));
                 }
 
                 // Status-bar Wi-Fi indicator (polled in thread (c2) above).

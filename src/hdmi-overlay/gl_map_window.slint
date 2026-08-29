@@ -11,6 +11,17 @@ export struct Size {
     height: length,
 }
 
+// A JMA continuously-monitored Hokkaido volcano, for the fly-to ComboBox.
+// Coordinates are summit positions (Wikipedia infobox, 2026-08-30); see
+// docs/plan.md for the VBM/VLCM-coverage cross-check (8 of 9 fall inside the
+// data's bbox -- Esan is just south of the edge, so flying there shows the
+// bvmap background but no VBM/VLCM overlay, which is expected, not a bug).
+export struct VolcanoEntry {
+    name: string,
+    lat: float,
+    lon: float,
+}
+
 export component MapWindow inherits Window {
     preferred-width: 720px;
     preferred-height: 576px;
@@ -18,6 +29,10 @@ export component MapWindow inherits Window {
 
     out property<Size> map-size: { width: map.width, height: map.height };
     callback map-size-changed;
+    // Shutdown button (kaga addition); main_gl.cpp runs `sudo systemctl
+    // poweroff` on this (the service's user has passwordless sudo already,
+    // needed for other things -- verified 2026-08-30).
+    callback request-shutdown();
     changed map-size => { map-size-changed(); }
 
     // The ComboBox shows the readable names; selecting one applies the URL at
@@ -30,8 +45,31 @@ export component MapWindow inherits Window {
         "bvmap",
     ];
     in-out property <[string]> style-urls: [
-        "http://127.0.0.1:8080/style.json",
-        "http://127.0.0.1:8080/style-bvmap-only.json",
+        "file:///opt/kaga/data/style.json",
+        "file:///opt/kaga/data/style-bvmap-only.json",
+    ];
+
+    // JMA's 9 continuously-monitored Hokkaido volcanoes, in JMA's own display
+    // order (north-to-south-ish by their grouping, not strict latitude).
+    // https://www.data.jma.go.jp/sapporo/bosai/bosaikyoiku/vol/v02_vol_pic.html#obs
+    in-out property <[VolcanoEntry]> volcanoes: [
+        { name: "アトサヌプリ", lat: 43.6103, lon: 144.4386 },
+        { name: "雌阿寒岳", lat: 43.3863, lon: 144.0088 },
+        { name: "大雪山(旭岳)", lat: 43.6636, lon: 142.8541 },
+        { name: "十勝岳", lat: 43.4178, lon: 142.6863 },
+        { name: "樽前山", lat: 42.6906, lon: 141.3767 },
+        { name: "倶多楽", lat: 42.5000, lon: 141.1833 },
+        { name: "有珠山", lat: 42.5439, lon: 140.8392 },
+        { name: "北海道駒ケ岳", lat: 42.0634, lon: 140.6772 },
+        { name: "恵山", lat: 41.8047, lon: 141.1661 },
+    ];
+    // ComboBox.model wants a plain [string]; kept parallel to `volcanoes`
+    // above (same order/index) rather than deriving it, since Slint has no
+    // array-map expression -- same duplication style-names/style-urls
+    // already uses in this file.
+    in-out property <[string]> volcano-names: [
+        "アトサヌプリ", "雌阿寒岳", "大雪山(旭岳)", "十勝岳", "樽前山",
+        "倶多楽", "有珠山", "北海道駒ケ岳", "恵山",
     ];
 
     // "Dance" toggle: drives the pitch/bearing animation in the C++ backend.
@@ -70,6 +108,12 @@ export component MapWindow inherits Window {
     // currently in active tuning, so it's on for now (see docs/plan.md).
     in property <string> debug-text: "";
     in property <bool> debug-visible: false;
+
+    // VBM/VLCM feature-attribute readout under the cursor (hover, no press).
+    // Empty string hides the panel; see main_gl.cpp's saver_timer for how
+    // this gets populated (throttled queryRenderedFeatures via
+    // SlintMapGL::query_feature_info).
+    in property <string> feature-info-text: "";
 
     // Keyboard: green glyph shown while a USB or Bluetooth keyboard is connected.
     in property <bool> kbd-connected: false;
@@ -166,7 +210,7 @@ export component MapWindow inherits Window {
             y: 0px;
             width: 100%;
             height: 100%;
-            style-url: "http://127.0.0.1:8080/style.json";
+            style-url: "file:///opt/kaga/data/style.json";
             center-lat: 0;
             center-lon: 0;
             zoom: 1;
@@ -193,9 +237,56 @@ export component MapWindow inherits Window {
                     current-index: 0;
                     selected => { map.style-url = root.style-urls[self.current-index]; }
                 }
-                Button { horizontal-stretch: 1; text: "駒ヶ岳"; clicked => { map.fly-to(42.0631, 140.6772, 12); } }
-                Button { horizontal-stretch: 1; text: "十勝岳"; clicked => { map.fly-to(43.4183, 142.6863, 12); } }
-                Button { horizontal-stretch: 1; text: "雌阿寒岳"; clicked => { map.fly-to(43.3844, 144.0128, 12); } }
+                ComboBox {
+                    horizontal-stretch: 2;
+                    model: root.volcano-names;
+                    // Index 4 = 樽前山, matching MAPLIBRE_CENTER's default
+                    // initial view (near Tomakomai/Shikotsu-ko -- vbm.pmtiles'
+                    // own embedded centre point). Purely cosmetic (nothing
+                    // re-syncs this if the view changes some other way, e.g.
+                    // drag/wheel/screensaver-restore), but showing an
+                    // unrelated volcano here while a different one is
+                    // actually on screen read as a bug at first glance.
+                    current-index: 4;
+                    // A fly-to shortcut list, not persistent view state --
+                    // unlike the style ComboBox, picking the same entry
+                    // twice should still fly there again, and there is no
+                    // "current volcano" to reflect back into current-index.
+                    selected => {
+                        map.fly-to(root.volcanoes[self.current-index].lat,
+                                   root.volcanoes[self.current-index].lon, 12);
+                    }
+                }
+                // Shutdown button (2026-08-30, 藤村さん指示): kaga is meant to
+                // be carried in keyboardless/networkless, so without an
+                // on-screen way to power off, the only option is pulling the
+                // plug -- risky for the SD card's filesystem. No confirmation
+                // dialog by design; the point is making a clean shutdown at
+                // least as easy as yanking power.
+                //
+                // A plain Rectangle+TouchArea rather than the std Button:
+                // fluent's Button has no colour-override property (only a
+                // fixed accent via `primary`), and this needs to visibly read
+                // as the one critical/destructive control in the toolbar
+                // (reddish), not just another button next to the ComboBoxes.
+                Rectangle {
+                    horizontal-stretch: 0;
+                    min-width: 112px;
+                    height: 100%;
+                    background: shutdown-touch.pressed ? #8f2a20 : #c0392b;
+                    border-radius: 3px;
+                    animate background { duration: 100ms; }
+                    shutdown-touch := TouchArea {
+                        clicked => { root.request-shutdown(); }
+                    }
+                    Text {
+                        text: "シャットダウン";
+                        color: white;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
             }
 
             // Dedicated top status bar (full-width strip above the toolbar).
@@ -436,6 +527,40 @@ export component MapWindow inherits Window {
             // dancing/sensor-available/sync-toggled bindings stay wired below
             // (untouched by C++) so this can come back without a rebuild of
             // main_gl.cpp; only the on-screen controls are gone.
+
+            // VBM/VLCM feature-attribute readout (kaga challenge goal,
+            // 2026-08-30). Hover-only (no press) via MMapAdapter.mouse-hovered
+            // -> main_gl.cpp's saver_timer throttles the actual
+            // queryRenderedFeatures call. Hidden whenever there is nothing to
+            // show (background, bvmap-only area, or the cursor has left the
+            // map) rather than showing an empty bar.
+            //
+            // Full-width one-line bottom pane, not a cursor-following
+            // tooltip/balloon (藤村さん: 「吹き出しは無様だ」) -- same idea as
+            // dwg7/sas0's docked info panel under its status map.
+            Rectangle {
+                x: 0px;
+                y: parent.height - self.height;
+                width: 100%;
+                height: 26px;
+                visible: root.feature-info-text != "";
+                background: #000000c0;
+                Text {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: 100%;
+                    text: root.feature-info-text;
+                    overflow: elide;
+                    // Yellow, and the same size as the toolbar ComboBoxes'
+                    // default text (default-font-size on the root Window,
+                    // 20px) -- general-audience readability over a
+                    // technical/small debug-panel look (藤村さん, 2026-08-30).
+                    color: #ffd24d;
+                    font-size: root.default-font-size;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                }
+            }
         }
     } // keys (FocusScope)
 

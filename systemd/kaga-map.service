@@ -34,7 +34,9 @@ Environment=SLINT_BACKEND=linuxkms
 Environment=MAPLIBRE_STYLE_URL=file:///opt/kaga/data/style.json
 # 北海道の火山データが実在する範囲(有珠山付近)。CLAUDE.md v0成功条件「北海道の
 # 主要火山を表示できる」に対応。将来複数拠点運用時は.envなどに切り出す想定。
-Environment=MAPLIBRE_CENTER=42.626,141.537,11
+# 樽前山(ComboBoxの初期選択、docs/plan.mdの火山リスト参照)のfly-to先と
+# 完全一致させ、起動直後の表示とドロップダウンの選択状態の食い違いを無くす。
+Environment=MAPLIBRE_CENTER=42.6906,141.3767,12
 # 実効ズームを+2して描画(画面解像度に対しVBMがやや粗く見える問題への対処、
 # 副次的にfps改善——同一ビューポートに収まるタイル枚数はズームに依らずほぼ
 # 一定だが、より深いズームのタイルの方が実測で軽かった。docs/decisions/0014参照)
