@@ -1,0 +1,20 @@
+# kaga: PMTiles/style.jsonをローカル配信するHTTPサーバー。
+#
+# maplibre-nativeのPMTilesFileSourceはHTTP(S) Range要求を使うため、
+# Range非対応のPython http.serverでは動かない(docs/decisions/0014参照)。
+# busyboxのhttpdはRange対応(206 Partial Content)なのでこれを使う。
+#
+# 127.0.0.1のみで待ち受け(-h でドキュメントルート指定、外部公開はしない)。
+
+[Unit]
+Description=kaga - local PMTiles/style HTTP server (busybox httpd)
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/busybox httpd -f -p 127.0.0.1:8080 -h /opt/kaga/data
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

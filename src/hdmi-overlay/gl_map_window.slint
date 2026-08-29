@@ -1,0 +1,483 @@
+// Raspberry Pi / small-touch-panel layout for the zero-copy GL example.
+// Larger touch targets (bigger fonts + a tall toolbar) and a wide right-edge
+// vertical zoom strip so taps land reliably on a low-res resistive panel.
+import { Button, ComboBox, HorizontalBox, VerticalBox, Slider, CheckBox } from "std-widgets.slint";
+import { MMapView, MMapAdapter } from "../src/maplibre.slint";
+
+export { MMapAdapter }
+
+export struct Size {
+    width: length,
+    height: length,
+}
+
+export component MapWindow inherits Window {
+    preferred-width: 720px;
+    preferred-height: 576px;
+    default-font-size: 20px;
+
+    out property<Size> map-size: { width: map.width, height: map.height };
+    callback map-size-changed;
+    changed map-size => { map-size-changed(); }
+
+    // The ComboBox shows the readable names; selecting one applies the URL at
+    // the same index (the two lists are kept parallel). C++ replaces both from
+    // a `label,url` file when one exists -- pointing the device at a different
+    // server, which is the whole of running it off-grid, should not be a
+    // rebuild. The lists below are the fallback when no file is found.
+    in-out property <[string]> style-names: [
+        "kitavolca",
+        "bvmap",
+    ];
+    in-out property <[string]> style-urls: [
+        "http://127.0.0.1:8080/style.json",
+        "http://127.0.0.1:8080/style-bvmap-only.json",
+    ];
+
+    // "Dance" toggle: drives the pitch/bearing animation in the C++ backend.
+    in-out property <bool> dancing: false;
+    callback set-dance(bool);
+
+    // "Sync" toggle: drive map pitch/bearing from the orientation sensors.
+    // sensor-available is set by C++ from the live sensor feed; the checkbox
+    // is disabled (greyed) when no fresh sensor data is present.
+    in property <bool> sensor-available: false;
+    callback sync-toggled(bool);
+
+    // Wall clock, "HH:MM", pushed from C++ (empty = hidden).
+    in property <string> clock-text: "";
+
+    // Battery (PiSugar): percent + charging state for a small corner readout.
+    in property <int> battery-percent: -1;     // -1 = unknown / hidden
+    in property <bool> battery-plugged: false;
+    in property <image> battery-icon;          // set from C++ (charge/full/high/middle/low)
+
+    // GPS status (from /dev/shm/pi-gps via C++): state 0=no device (grey),
+    // 1=no fix (yellow), 2=fix (green); gps-sats = satellites in view.
+    in property <int> gps-state: 0;
+    in property <int> gps-sats: 0;
+    in property <image> gps-icon;   // set from C++ (grey+X/yellow/green satellite)
+
+    // Network/Wi-Fi status (from C++): state 0 = disconnected/down (grey with a
+    // red X), 1 = link up but no default route (yellow), 2 = connected with a
+    // default route (green). Lets a Wi-Fi drop be seen at a glance.
+    in property <int> net-state: 0;
+    in property <image> wifi-icon;  // set from C++ (grey+X/yellow/green Wi-Fi glyph)
+    in property <string> wifi-ssid: "";   // current SSID (C++; truncated to 15 chars)
+
+    // Keyboard: green glyph shown while a USB or Bluetooth keyboard is connected.
+    in property <bool> kbd-connected: false;
+    in property <image> kbd-icon;   // set from C++ (green keyboard PNG)
+
+    // Microphone. Hidden when no ALSA capture device exists -- there is no
+    // "no mic" state worth drawing. When one does, the colour says who is
+    // using it: grey = nobody listening, green = pi-hear waiting for speech,
+    // yellow = busy (transcribing, or muted while the map talks back).
+    in property <bool> mic-present: false;
+    // Which language the recogniser is listening in: "" (unknown / pi-hear not
+    // running), "日" or "En". Next to the microphone because the two answer one
+    // question together -- whether it is listening, and to what.
+    in property <string> mic-lang: "";
+    in property <int> mic-state: 0;   // 0=idle, 1=busy, 2=listening
+    in property <image> mic-icon;     // set from C++ (grey/yellow/green PNG)
+
+    // Caption strip: what the voice stack is doing, in words. The screen is
+    // frozen for seconds at a time while the recogniser has the CPU, so this
+    // is the only thing telling the user the device is alive -- and, when a
+    // command goes nowhere, whether it misheard or heard nothing at all.
+    // Empty hides it. Styling follows acaption (the desktop caption overlay).
+    in property <string> caption-text: "";
+    in property <bool> caption-busy: false;
+
+    // Voice UI stage, and what it is for:
+    //   0 idle      nothing drawn
+    //   1 armed     the wake word landed -- dim the map and show the waveform,
+    //               so it is obvious the device is now listening to *you*, and
+    //               obvious from the wave that it can actually hear you
+    //   2 thinking  the utterance is with the recogniser -- the words got
+    //               through, this is the part where you wait
+    in property <int> voice-stage: 0;
+    // Stylised waveform, as an SVG path built in C++ from one level value.
+    // Not real samples: the point is legible feedback, not an oscilloscope.
+    in property <string> wave-path: "";
+    in property <float> wave-pulse: 0.0;   // 0..1, drives the glow
+
+    // Keyboard: arrow keys pan, Shift+Up/Down zoom. This FocusScope grabs focus
+    // on startup (init below) so the arrows do NOT land on the zoom Slider (which
+    // would otherwise consume Up/Down as zoom). Unhandled keys from other widgets
+    // bubble up to this ancestor scope, so panning works whatever has focus,
+    // except the Slider itself.
+    callback pan(/* dx */ float, /* dy */ float);
+    init => { keys.focus(); }
+
+    // Staged idle screensaver (driven entirely from C++; see main_gl.cpp).
+    //   0 normal  1 DVD logo bounce  2 bouncing map tile  3 off / black
+    // The C++ side stops the map render while saver-state > 0 and the opaque
+    // overlay below covers the (stale) map texture. NEVER pushed upstream.
+    in property <int> saver-state: 0;
+    in property <length> logo-x: 40px;
+    in property <length> logo-y: 40px;
+    in property <brush> logo-color: #5050ff;
+    in property <image> tile-image;
+    // DVD logo: hand-tinted in C++ (the art is black-on-transparent, and Slint
+    // `colorize` multiplies it to black, so we paint the alpha shape ourselves).
+    in property <image> dvd-image;
+    callback wake();
+
+    // The map fills the whole window: the C++ side renders the live map (stage
+    // 0) or the composited screensaver frame (black field + bouncing logo/tile)
+    // into the FBO this MMapView displays 1:1. The screensaver is NOT drawn with
+    // Slint overlay elements: in this zero-copy GL build femtovg only renders
+    // the persistent full-screen MMapView's borrowed texture plus plain
+    // Rectangles/Text; Image elements (CPU- or GL-backed) inside a conditional
+    // overlay do not render at all. The touch controls below float over the map
+    // and are hidden while the screensaver runs.
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.UpArrow) {
+                if (event.modifiers.shift) {
+                    MMapAdapter.wheel-zoomed(map.width / 2 / 1px, map.height / 2 / 1px, -1);
+                } else {
+                    root.pan(0, 80);
+                }
+                return accept;
+            }
+            if (event.text == Key.DownArrow) {
+                if (event.modifiers.shift) {
+                    MMapAdapter.wheel-zoomed(map.width / 2 / 1px, map.height / 2 / 1px, 1);
+                } else {
+                    root.pan(0, -80);
+                }
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) { root.pan(80, 0); return accept; }
+            if (event.text == Key.RightArrow) { root.pan(-80, 0); return accept; }
+            return reject;
+        }
+
+        map := MMapView {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            style-url: "http://127.0.0.1:8080/style.json";
+            center-lat: 0;
+            center-lon: 0;
+            zoom: 1;
+        }
+
+        // Floating touch controls over the map; hidden during the screensaver.
+        Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+            visible: root.saver-state == 0;
+
+            // Toolbar (top): style dropdown + quick city jumps. Full width
+            // (the zoom strip sits below it on the right).
+            HorizontalBox {
+                x: 22px;
+                y: 36px;
+                width: parent.width - 44px;
+                height: 64px;
+                spacing: 8px;
+                ComboBox {
+                    horizontal-stretch: 2;
+                    model: root.style-names;
+                    current-index: 0;
+                    selected => { map.style-url = root.style-urls[self.current-index]; }
+                }
+                Button { horizontal-stretch: 1; text: "駒ヶ岳"; clicked => { map.fly-to(42.0631, 140.6772, 12); } }
+                Button { horizontal-stretch: 1; text: "十勝岳"; clicked => { map.fly-to(43.4183, 142.6863, 12); } }
+                Button { horizontal-stretch: 1; text: "雌阿寒岳"; clicked => { map.fly-to(43.3844, 144.0128, 12); } }
+            }
+
+            // Dedicated top status bar (full-width strip above the toolbar).
+            // GPS (satellite icon + sat count) on the left, battery on the right.
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 100%;
+                height: 26px;
+                background: #000000c0;
+                // GPS satellite icon: grey=no device, yellow=no fix, green=fix.
+                Image {                     // left; image comes from C++ (SharedPixelBuffer)
+                    x: 8px;
+                    y: 3px;
+                    width: 20px;
+                    height: 20px;
+                    source: root.gps-icon;
+                }
+                Text {                      // satellite count (when GPS present)
+                    x: 32px;
+                    y: 0px;
+                    width: 40px;
+                    height: 100%;
+                    visible: root.gps-state >= 1;
+                    text: root.gps-sats;
+                    color: root.gps-state == 2 ? #6ee06e : #ffd24d;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                }
+                Image {                     // microphone present (green); hidden otherwise
+                    x: 80px;
+                    y: 3px;
+                    width: 20px;
+                    height: 20px;
+                    visible: root.mic-present;
+                    source: root.mic-icon;
+                }
+                Text {                      // listening language, beside the mic
+                    x: 104px;
+                    y: 0px;
+                    width: 26px;
+                    height: 100%;
+                    visible: root.mic-present && root.mic-lang != "";
+                    text: root.mic-lang;
+                    color: #6ee06e;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                }
+                Image {                     // keyboard connected (green); hidden otherwise
+                    x: 136px;
+                    y: 3px;
+                    width: 20px;
+                    height: 20px;
+                    visible: root.kbd-connected;
+                    source: root.kbd-icon;
+                }
+                // Right cluster, left to right:  [Wi-Fi] SSID   [battery] AC NN%   HH:MM
+                // Everything here is anchored to the right edge, so the widths
+                // below are what each field is allowed to occupy. The battery
+                // label is left-aligned so it sits against its icon: giving it
+                // a wide right-aligned box instead leaves a gap that reads as a
+                // layout bug.
+                Image {                     // Wi-Fi: grey+red-X=down, yellow=no route, green=ok
+                    x: parent.width - 264px;
+                    y: 3px;
+                    width: 20px;
+                    height: 20px;
+                    source: root.wifi-icon;
+                }
+                Text {                      // SSID, just right of the Wi-Fi icon
+                    x: parent.width - 240px;
+                    y: 0px;
+                    // Fixed box so the cluster does not shuffle when the SSID
+                    // changes; `elide` puts an ellipsis on whatever does not
+                    // fit. Eliding by width belongs here rather than in C++,
+                    // which can only count codepoints and would cut a
+                    // proportional font at an arbitrary pixel position.
+                    //
+                    // 88px is the whole gap to the battery icon: "No internet"
+                    // is wider than any SSID here and was being elided at 80.
+                    width: 88px;
+                    height: 100%;
+                    visible: root.net-state != 2 || root.wifi-ssid != "";
+                    // The icon already goes grey, and grey is easy to miss on a
+                    // sunlit deck. Say it in words instead. Whenever there is no
+                    // route this is the fact worth the space -- including
+                    // net-state 1, associated to an AP with no way out, which is
+                    // the state most likely to be misread as working.
+                    text: root.net-state == 2 ? root.wifi-ssid : "No internet";
+                    overflow: elide;
+                    color: white;
+                    font-size: 14px;
+                    horizontal-alignment: left;
+                    vertical-alignment: center;
+                }
+                Image {                     // battery level/charge icon (Icons8)
+                    x: parent.width - 152px;
+                    y: 3px;
+                    width: 20px;
+                    height: 20px;
+                    image-fit: contain;
+                    visible: root.battery-percent >= 0;
+                    source: root.battery-icon;
+                }
+                Text {                      // battery %, hard against its icon
+                    x: parent.width - 128px;
+                    y: 0px;
+                    width: 66px;            // widest case: "BAT 100%"
+                    height: 100%;
+                    visible: root.battery-percent >= 0;
+                    text: (root.battery-plugged ? "AC " : "BAT ") + root.battery-percent + "%";
+                    color: root.battery-percent <= 20 ? #ff8080 : white;
+                    font-size: 14px;
+                    horizontal-alignment: left;
+                    vertical-alignment: center;
+                }
+                Text {                      // clock, hard against the right edge
+                    x: parent.width - 52px;
+                    y: 0px;
+                    width: 44px;
+                    height: 100%;
+                    visible: root.clock-text != "";
+                    text: root.clock-text;
+                    color: white;
+                    font-size: 14px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Wide right-edge vertical zoom strip (easy to hit on resistive
+            // touch), below the full-width toolbar.
+            VerticalBox {
+                width: 120px;
+                x: parent.width - 128px;
+                y: 108px;
+                height: parent.height - 120px;
+                padding: 8px;
+                spacing: 10px;
+                Button {
+                    min-height: 56px;
+                    text: "+";
+                    clicked => { MMapAdapter.wheel-zoomed(map.width / 2 / 1px, map.height / 2 / 1px, -1); }
+                }
+                Slider {
+                    orientation: vertical;
+                    vertical-stretch: 1;
+                    minimum: 1;
+                    maximum: 18;
+                    value: 10;
+                    changed value => { map.set-zoom(self.value); }
+                }
+                Button {
+                    min-height: 56px;
+                    text: "-";
+                    clicked => { MMapAdapter.wheel-zoomed(map.width / 2 / 1px, map.height / 2 / 1px, 1); }
+                }
+            }
+
+            // Dim the map while the device is listening to someone. Drawn over
+            // the map but under the bar and toolbar, so the controls stay
+            // readable. Display-only: taps fall through to the map.
+            Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 100%;
+                height: 100%;
+                visible: root.voice-stage > 0;
+                background: root.voice-stage == 1 ? #00000066 : #0000008c;
+            }
+
+            // Waveform, in the band above the caption. Amplitude follows the
+            // input level, so a flat line means "not hearing you" and says so
+            // without words.
+            Rectangle {
+                x: 24px;
+                y: parent.height - 236px;
+                width: parent.width - 152px;
+                height: 76px;
+                visible: root.voice-stage == 1;
+                background: #05070ecc;
+                border-width: 1px;
+                border-color: #1e3064;
+                border-radius: 6px;
+                // Centre line, so a silent wave still reads as a wave.
+                Rectangle {
+                    x: 10px;
+                    y: parent.height / 2 - 1px;
+                    width: parent.width - 20px;
+                    height: 2px;
+                    background: #1e30642e;
+                }
+                Path {
+                    x: 10px;
+                    y: 0px;
+                    width: parent.width - 20px;
+                    height: 100%;
+                    viewbox-width: 100;
+                    viewbox-height: 100;
+                    commands: root.wave-path;
+                    stroke: #7ab0f0;
+                    stroke-width: 2px;
+                }
+                // Level bar: the same number again, unambiguously.
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height - 10px;
+                    width: max(8px, (parent.width - 24px) * root.wave-pulse);
+                    height: 4px;
+                    background: #3d6bbf59;
+                    border-radius: 2px;
+                }
+            }
+
+            // Caption strip, above the bottom-left toggle and clear of the
+            // right-edge zoom column. Display-only (no TouchArea), so it stays
+            // transparent to taps meant for the map underneath.
+            Rectangle {
+                x: 24px;
+                y: parent.height - 152px;
+                width: parent.width - 152px;
+                height: 44px;
+                visible: root.caption-text != "";
+                background: #05070ee0;
+                border-width: 1px;
+                border-color: #1e306461;
+                border-radius: 6px;
+                Text {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    height: 100%;
+                    text: root.caption-text;
+                    // Dim while working, bright once there is something to read.
+                    color: root.caption-busy ? #4a6090 : #b8cce8;
+                    font-size: 20px;
+                    overflow: elide;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Dance/Calm and Sync controls removed for kaga: v0 has no terrain
+            // tiles, so pitch/bearing 3D camera moves are out of scope until
+            // that changes (see docs/decisions/0014). The underlying
+            // dancing/sensor-available/sync-toggled bindings stay wired below
+            // (untouched by C++) so this can come back without a rebuild of
+            // main_gl.cpp; only the on-screen controls are gone.
+        }
+    } // keys (FocusScope)
+
+
+    // Screensaver. Hard-won rendering rules for this zero-copy GL + femtovg
+    // build (all verified by glReadPixels, not eyeballing):
+    //   * The black field is a Rectangle gated with `if` (Rectangles created at
+    //     runtime render fine).
+    //   * The bouncing IMAGES must be ALWAYS present (an Image created when an
+    //     `if` flips true at runtime never uploads its texture and stays blank),
+    //     gated with `opacity`, and placed AFTER the overlay so they draw on top.
+    if root.saver-state > 0 : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: black;
+        TouchArea {
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) { root.wake(); }
+            }
+        }
+    }
+    // Stage 1: recoloured DVD logo (hand-tinted SharedPixelBuffer from C++).
+    Image {
+        opacity: root.saver-state == 1 ? 1.0 : 0.0;
+        x: root.logo-x;
+        y: root.logo-y;
+        width: 140px;
+        height: 84px;
+        source: root.dvd-image;
+        image-fit: contain;
+    }
+    // Stage 2: a 220x220 pre-rendered map tile (mbgl-render PNG, loaded in C++).
+    Image {
+        opacity: root.saver-state == 2 ? 1.0 : 0.0;
+        x: root.logo-x;
+        y: root.logo-y;
+        width: 220px;
+        height: 220px;
+        source: root.tile-image;
+        image-fit: fill;
+    }
+}

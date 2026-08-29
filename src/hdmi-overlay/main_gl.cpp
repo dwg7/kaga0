@@ -1,0 +1,1669 @@
+#include <GLES3/gl3.h>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <mutex>
+#include <cerrno>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cctype>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <dirent.h>
+#include <fcntl.h>
+#include <iostream>
+#include <linux/input.h>
+#include <memory>
+#include <poll.h>
+#include <slint.h>
+#include <sys/ioctl.h>
+#include <string>
+#include <sys/stat.h>
+#include <thread>
+#include <unistd.h>
+#include <utility>
+#include <vector>
+
+#include <fstream>
+#include <sstream>
+#include <mbgl/util/image.hpp>
+
+#include "gl_map_window.h"
+#include "slint_map_gl.hpp"
+#include "style_list.hpp"
+#include "voice_activity.hpp"
+
+// DVD logo dimensions (display + alpha-mask size).
+// DVD logo dimensions (display + alpha-mask size).
+static const int DVD_W = 140, DVD_H = 84;
+
+// Decode the DVD-logo PNG into a downscaled alpha mask (the logo shape). The
+// art is black-on-transparent, and Slint `colorize` multiplies it back to
+// black, so we keep just the shape and paint it ourselves (see dvd_tinted).
+static std::vector<uint8_t> load_dvd_mask(const std::string& path) {
+    std::vector<uint8_t> mask((size_t)DVD_W * DVD_H, 0);
+    std::ifstream f(path, std::ios::binary);
+    if (!f)
+        return mask;
+    std::string data((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    if (data.empty())
+        return mask;
+    try {
+        mbgl::PremultipliedImage img = mbgl::decodeImage(data);
+        const uint32_t w = img.size.width, h = img.size.height;
+        const uint8_t* src = img.data.get();
+        for (int y = 0; y < DVD_H; ++y)
+            for (int x = 0; x < DVD_W; ++x) {
+                uint32_t sx = w ? (uint32_t)x * w / DVD_W : 0;
+                uint32_t sy = h ? (uint32_t)y * h / DVD_H : 0;
+                mask[(size_t)y * DVD_W + x] = src[((size_t)sy * w + sx) * 4 + 3];
+            }
+    } catch (...) {
+    }
+    return mask;
+}
+
+// Build an opaque DVD-logo image: logo shape in `color`, the rest black (so it
+// is seamless on the black screensaver field).
+static slint::Image dvd_tinted(const std::vector<uint8_t>& mask,
+                               uint32_t color) {
+    uint8_t r = (color >> 16) & 0xff, g = (color >> 8) & 0xff, b = color & 0xff;
+    std::vector<uint8_t> rgba((size_t)DVD_W * DVD_H * 4);
+    for (size_t i = 0; i < (size_t)DVD_W * DVD_H; ++i) {
+        bool on = i < mask.size() && mask[i] > 100;
+        rgba[i * 4 + 0] = on ? r : 0;
+        rgba[i * 4 + 1] = on ? g : 0;
+        rgba[i * 4 + 2] = on ? b : 0;
+        rgba[i * 4 + 3] = 255;
+    }
+    slint::SharedPixelBuffer<slint::Rgba8Pixel> spb(
+        DVD_W, DVD_H, reinterpret_cast<const slint::Rgba8Pixel*>(rgba.data()));
+    return slint::Image(spb);
+}
+
+// Load a pre-rendered map-tile PNG (from mbgl-render) into an opaque RGBA
+// SharedPixelBuffer.
+static slint::Image load_png_image(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f)
+        return slint::Image();
+    std::string data((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    if (data.empty())
+        return slint::Image();
+    try {
+        mbgl::PremultipliedImage img = mbgl::decodeImage(data);
+        const uint32_t w = img.size.width, h = img.size.height;
+        const uint8_t* src = img.data.get();
+        std::vector<uint8_t> rgba((size_t)w * h * 4);
+        for (size_t i = 0; i < (size_t)w * h; ++i) {
+            uint8_t a = src[i * 4 + 3];
+            for (int c = 0; c < 3; ++c)
+                rgba[i * 4 + c] =
+                    a ? static_cast<uint8_t>(std::min(255, src[i * 4 + c] * 255 / a))
+                      : 0;
+            rgba[i * 4 + 3] = 255;  // opaque (tiles are full map crops)
+        }
+        slint::SharedPixelBuffer<slint::Rgba8Pixel> spb(
+            w, h, reinterpret_cast<const slint::Rgba8Pixel*>(rgba.data()));
+        return slint::Image(spb);
+    } catch (...) {
+        return slint::Image();
+    }
+}
+
+// Load a PNG into an RGBA SharedPixelBuffer PRESERVING alpha (for icons with a
+// transparent background, e.g. the status-bar satellite). @image-url images do
+// not render in this femtovg-GL build, so icons are passed in as <image>
+// properties the same way the DVD logo / tiles are.
+static slint::Image load_png_rgba(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f)
+        return slint::Image();
+    std::string data((std::istreambuf_iterator<char>(f)),
+                     std::istreambuf_iterator<char>());
+    if (data.empty())
+        return slint::Image();
+    try {
+        mbgl::PremultipliedImage img = mbgl::decodeImage(data);
+        const uint32_t w = img.size.width, h = img.size.height;
+        const uint8_t* src = img.data.get();
+        std::vector<uint8_t> rgba((size_t)w * h * 4);
+        for (size_t i = 0; i < (size_t)w * h; ++i) {
+            uint8_t a = src[i * 4 + 3];
+            for (int c = 0; c < 3; ++c)
+                rgba[i * 4 + c] =
+                    a ? static_cast<uint8_t>(std::min(255, src[i * 4 + c] * 255 / a))
+                      : 0;
+            rgba[i * 4 + 3] = a;  // preserve transparency
+        }
+        slint::SharedPixelBuffer<slint::Rgba8Pixel> spb(
+            w, h, reinterpret_cast<const slint::Rgba8Pixel*>(rgba.data()));
+        return slint::Image(spb);
+    } catch (...) {
+        return slint::Image();
+    }
+}
+
+// Monotonic milliseconds, shared by the idle watcher and the screensaver timer.
+static int64_t now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// The two marker feeds are concatenated into one string so a single compare
+// tells us whether anything changed; this pulls the self part back out.
+static std::string self_raw_of(const std::string& blob) {
+    const auto at = blob.find("\n#self ");
+    return at == std::string::npos ? std::string() : blob.substr(at + 7);
+}
+
+// True while a FRESH /dev/shm/pi-map-pause (<15s, wall-clock vs file mtime)
+// exists. pi-hear touches it during ASR so the recogniser gets the full CPU.
+// We honour it by NOT re-arming the render loop (V3D discards a *skipped* FBO
+// -> gray; so instead of skipping the render we stop compositing new frames,
+// which holds the last good frame on screen and frees the core).
+static bool map_render_paused() {
+    struct stat st {};
+    if (::stat("/dev/shm/pi-map-pause", &st) != 0)
+        return false;
+    int64_t rt = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::system_clock::now().time_since_epoch())
+                     .count();
+    int64_t m = static_cast<int64_t>(st.st_mtim.tv_sec) * 1000 +
+                st.st_mtim.tv_nsec / 1000000;
+    return (rt - m) < 15000;
+}
+
+// pi-hear's state file: line 1 is a word, line 2 an optional caption, line 3
+// the language it is listening in. Returns false when it is missing or stale --
+// stale means pi-hear is not running, which must not read the same as pi-hear
+// sitting idle.
+//
+// The language comes from pi-hear rather than from this side reading the same
+// config, so that switching it is one restart instead of two that have to
+// agree; an older pi-hear writes two lines and the captions stay Japanese,
+// which is what they were.
+static bool read_hear_state(std::string& word, std::string& text,
+                            std::string& lang) {
+    struct stat st {};
+    if (::stat("/dev/shm/pi-hear-state", &st) != 0)
+        return false;
+    const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    if (now - static_cast<int64_t>(st.st_mtim.tv_sec) >= 5)
+        return false;
+    std::ifstream f("/dev/shm/pi-hear-state");
+    if (!std::getline(f, word))
+        return false;
+    if (!std::getline(f, text))
+        text.clear();
+    if (!std::getline(f, lang) || (lang != "ja" && lang != "en"))
+        lang = "ja";
+    return true;
+}
+
+// Current input level, 0..1, as pi-hear last measured it. Stale means nobody
+// is capturing, which must read as silence rather than as the last thing heard.
+static float read_hear_level() {
+    struct stat st {};
+    if (::stat("/dev/shm/pi-hear-level", &st) != 0)
+        return 0.f;
+    const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    if (now - static_cast<int64_t>(st.st_mtim.tv_sec) >= 2)
+        return 0.f;
+    std::ifstream f("/dev/shm/pi-hear-level");
+    float v = 0.f;
+    if (!(f >> v))
+        return 0.f;
+    return v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
+}
+
+// A stylised waveform, in a 0..100 viewbox, from a single level. Lifted from
+// acaption's canvas visualiser so the deck and the desktop overlay move the
+// same way: two out-of-phase components rather than a clean sine (a clean one
+// reads as a test signal), tapered at both ends, travelling left to right.
+static std::string wave_commands(float level, double t) {
+    constexpr int POINTS = 48;
+    std::string out;
+    out.reserve(POINTS * 16);
+    char buf[64];
+    for (int i = 0; i < POINTS; ++i) {
+        const double x = 100.0 * i / (POINTS - 1);
+        const double phase = i * 0.9 + t * 9.0;
+        const double envelope =
+            0.25 + 0.75 * std::sin((double)i / POINTS * M_PI);
+        const double wiggle =
+            std::sin(phase) * 0.3 + std::sin(phase * 0.37 + 1.2) * 0.2;
+        // The floor keeps a living line under silence: a wave that goes
+        // perfectly flat is indistinguishable from a UI that has died.
+        const double amp = std::max(0.05, level * 2.2);
+        const double y = 50.0 + wiggle * envelope * amp * 38.0;
+        std::snprintf(buf, sizeof buf, "%c %.1f %.1f ", i ? 'L' : 'M', x, y);
+        out += buf;
+    }
+    return out;
+}
+
+static int64_t env_secs(const char* key, int64_t def) {
+    if (const char* e = std::getenv(key)) {
+        if (e[0] != '\0') {
+            char* end = nullptr;
+            long v = std::strtol(e, &end, 10);
+            if (end != e && v >= 0)
+                return v;
+        }
+    }
+    return def;
+}
+
+// --- Screensaver shared state ------------------------------------------------
+
+// One tick of a bouncing box; returns true on the tick a wall was hit.
+static bool ss_bounce(float& x, float& y, float& vx, float& vy, float W, float H,
+                      float bw, float bh) {
+    x += vx;
+    y += vy;
+    bool b = false;
+    if (x <= 0.f) {
+        x = 0.f;
+        vx = std::fabs(vx);
+        b = true;
+    } else if (x + bw >= W) {
+        x = W - bw;
+        vx = -std::fabs(vx);
+        b = true;
+    }
+    if (y <= 0.f) {
+        y = 0.f;
+        vy = std::fabs(vy);
+        b = true;
+    } else if (y + bh >= H) {
+        y = H - bh;
+        vy = -std::fabs(vy);
+        b = true;
+    }
+    return b;
+}
+
+int main(int /*argc*/, char** /*argv*/) {
+    std::cout << "[main_gl] Starting zero-copy GL application" << std::endl;
+
+    auto win = MapWindow::create();
+    auto smap = std::make_shared<SlintMapGL>();
+
+    // Idle clock, updated by the input watcher and the wake() callback.
+    auto last_activity = std::make_shared<std::atomic<int64_t>>(now_ms());
+
+    // Pixel-readback self-test (MAPLIBRE_SELFTEST): assert per-stage rendering.
+    const bool selftest = std::getenv("MAPLIBRE_SELFTEST") != nullptr;
+
+    // DVD logo: decode the PNG shape once; tint it to the bounce colour each
+    // wall hit. (@image-url renders fine here, but Slint colorize multiplies
+    // the black logo art to black, so we paint the alpha shape ourselves.)
+    auto dvd_mask = std::make_shared<std::vector<uint8_t>>();
+    {
+        std::string home =
+            std::getenv("HOME") ? std::getenv("HOME") : "/home/yuiseki";
+        std::string p = std::getenv("MAPLIBRE_DVD_LOGO")
+                            ? std::getenv("MAPLIBRE_DVD_LOGO")
+                            : (home + "/images/dvd-logo.png");
+        *dvd_mask = load_dvd_mask(p);
+        win->set_dvd_image(dvd_tinted(*dvd_mask, 0x50c8ff));
+    }
+
+    // Status-bar GPS satellite icons (grey/yellow/green), indexed by gps state
+    // 0/1/2. Passed in as <image> (the @image-url path does not render here).
+    auto sat_icons = std::make_shared<std::array<slint::Image, 3>>();
+    {
+        std::string home =
+            std::getenv("HOME") ? std::getenv("HOME") : "/home/yuiseki";
+        (*sat_icons)[0] = load_png_rgba(home + "/images/sat-grey.png");
+        (*sat_icons)[1] = load_png_rgba(home + "/images/sat-yellow.png");
+        (*sat_icons)[2] = load_png_rgba(home + "/images/sat-green.png");
+        win->set_gps_icon((*sat_icons)[0]);
+    }
+
+    // Status-bar Wi-Fi icons (grey+red-X / yellow / green), indexed by net state
+    // 0/1/2, loaded the same way as the satellite icons above.
+    auto wifi_icons = std::make_shared<std::array<slint::Image, 3>>();
+    {
+        std::string home =
+            std::getenv("HOME") ? std::getenv("HOME") : "/home/yuiseki";
+        (*wifi_icons)[0] = load_png_rgba(home + "/images/wifi-grey.png");
+        (*wifi_icons)[1] = load_png_rgba(home + "/images/wifi-yellow.png");
+        (*wifi_icons)[2] = load_png_rgba(home + "/images/wifi-green.png");
+        win->set_wifi_icon((*wifi_icons)[0]);
+        // Keyboard-connected indicator (green glyph); visibility toggled in slint.
+        win->set_kbd_icon(load_png_rgba(home + "/images/kbd-green.png"));
+    }
+
+    // Status-bar microphone icons: 0=grey (nobody listening), 1=yellow (busy),
+    // 2=green (pi-hear waiting for speech). Same grey/yellow/green vocabulary
+    // as the GPS and Wi-Fi glyphs.
+    auto mic_icons = std::make_shared<std::array<slint::Image, 3>>();
+    {
+        std::string home =
+            std::getenv("HOME") ? std::getenv("HOME") : "/home/yuiseki";
+        (*mic_icons)[0] = load_png_rgba(home + "/images/mic-grey.png");
+        (*mic_icons)[1] = load_png_rgba(home + "/images/mic-yellow.png");
+        (*mic_icons)[2] = load_png_rgba(home + "/images/mic-green.png");
+        win->set_mic_icon((*mic_icons)[0]);
+    }
+
+    // Status-bar battery icons (Icons8): index 0=charge(plugged), 1=full,
+    // 2=high, 3=middle, 4=low; chosen by plugged + percent in the UI tick.
+    auto battery_icons = std::make_shared<std::array<slint::Image, 5>>();
+    {
+        std::string home =
+            std::getenv("HOME") ? std::getenv("HOME") : "/home/yuiseki";
+        (*battery_icons)[0] = load_png_rgba(home + "/images/battery-charge.png");
+        (*battery_icons)[1] = load_png_rgba(home + "/images/battery-full.png");
+        (*battery_icons)[2] = load_png_rgba(home + "/images/battery-high.png");
+        (*battery_icons)[3] = load_png_rgba(home + "/images/battery-middle.png");
+        (*battery_icons)[4] = load_png_rgba(home + "/images/battery-low.png");
+    }
+
+    // Pre-rendered map tiles (PNGs from mbgl-render) for the bouncing-tile
+    // stage. Loaded once into RGBA SharedPixelBuffers (which render here).
+    auto tiles = std::make_shared<std::vector<slint::Image>>();
+    {
+        std::string home =
+            std::getenv("HOME") ? std::getenv("HOME") : "/home/yuiseki";
+        std::string dir = std::getenv("MAPLIBRE_TILE_DIR")
+                              ? std::getenv("MAPLIBRE_TILE_DIR")
+                              : (home + "/images/screensaver-tiles");
+        std::vector<std::string> names;
+        if (DIR* d = opendir(dir.c_str())) {
+            while (struct dirent* e = readdir(d)) {
+                std::string n = e->d_name;
+                if (n.size() > 4 && n.substr(n.size() - 4) == ".png")
+                    names.push_back(n);
+            }
+            closedir(d);
+        }
+        std::sort(names.begin(), names.end());
+        for (auto& n : names) {
+            slint::Image img = load_png_image(dir + "/" + n);
+            if (img.size().width > 0)
+                tiles->push_back(img);
+        }
+        std::cout << "[main_gl] loaded " << tiles->size()
+                  << " screensaver tiles from " << dir << std::endl;
+    }
+
+
+    // Style list. A `label,url` file replaces the built-in one when present,
+    // so aiming the device at a local server -- which is what running it
+    // off-grid amounts to -- is an edit rather than a rebuild. Falls back to
+    // the list compiled into the .slint file when no file is found.
+    std::string styleUrl = "https://demotiles.maplibre.org/style.json";
+    {
+        const auto styles = maplibre_slint::find_style_list();
+        if (!styles.empty()) {
+            std::vector<slint::SharedString> names, urls;
+            names.reserve(styles.size());
+            urls.reserve(styles.size());
+            for (const auto& e : styles) {
+                names.emplace_back(e.label.c_str());
+                urls.emplace_back(e.url.c_str());
+            }
+            win->set_style_names(std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(names)));
+            win->set_style_urls(std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(urls)));
+            styleUrl = styles.front().url;
+            std::cout << "[styles] " << styles.size()
+                      << " from file; first = " << styleUrl << std::endl;
+        }
+    }
+    // The environment still wins, so a one-off "show me this style" needs no
+    // file at all.
+    if (const char* env = std::getenv("MAPLIBRE_STYLE_URL")) {
+        if (env[0] != '\0')
+            styleUrl = env;
+    }
+
+    // Optional explicit render size; otherwise the display's native size is
+    // used (so it fills the screen at any resolution, including small panels).
+    int envW = 0, envH = 0;
+    if (const char* e = std::getenv("MAPLIBRE_WIDTH"))
+        envW = std::atoi(e);
+    if (const char* e = std::getenv("MAPLIBRE_HEIGHT"))
+        envH = std::atoi(e);
+
+    auto gl_ready = std::make_shared<bool>(false);
+    auto tex = std::make_shared<GLuint>(0);
+    auto fbo = std::make_shared<GLuint>(0);
+    auto rbo = std::make_shared<GLuint>(0);
+    auto Wp = std::make_shared<int>(0);
+    auto Hp = std::make_shared<int>(0);
+
+    win->window().set_rendering_notifier([=](slint::RenderingState state,
+                                             slint::GraphicsAPI api) {
+        switch (state) {
+        case slint::RenderingState::RenderingSetup: {
+            if (api != slint::GraphicsAPI::NativeOpenGL) {
+                std::cout << "[main_gl] WARNING: GraphicsAPI is not "
+                             "NativeOpenGL; zero-copy GL path unavailable"
+                          << std::endl;
+                return;
+            }
+
+            auto ps = win->window().size();
+            int w = envW > 0
+                        ? envW
+                        : (ps.width > 0 ? static_cast<int>(ps.width) : 1280);
+            int h = envH > 0
+                        ? envH
+                        : (ps.height > 0 ? static_cast<int>(ps.height) : 720);
+            *Wp = w;
+            *Hp = h;
+            std::cout << "[main_gl] RenderingSetup: NativeOpenGL acquired, "
+                         "render size "
+                      << w << "x" << h << std::endl;
+
+            glGenTextures(1, tex.get());
+            glBindTexture(GL_TEXTURE_2D, *tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, nullptr);
+
+            glGenRenderbuffers(1, rbo.get());
+            glBindRenderbuffer(GL_RENDERBUFFER, *rbo);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
+
+            glGenFramebuffers(1, fbo.get());
+            glBindFramebuffer(GL_FRAMEBUFFER, *fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D, *tex, 0);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER,
+                                      GL_DEPTH_STENCIL_ATTACHMENT,
+                                      GL_RENDERBUFFER, *rbo);
+
+            GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            std::cout << "[main_gl] FBO status="
+                      << (status == GL_FRAMEBUFFER_COMPLETE
+                              ? "GL_FRAMEBUFFER_COMPLETE"
+                              : std::to_string(status))
+                      << " fbo=" << *fbo << " tex=" << *tex << std::endl;
+
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+            smap->setup(*fbo, w, h, styleUrl);
+            *gl_ready = true;
+            break;
+        }
+        case slint::RenderingState::BeforeRendering: {
+            if (!*gl_ready)
+                return;
+
+            // While the screensaver is up, the live-map texture is fully hidden
+            // behind the opaque black overlay, so there is no point rendering it
+            // -- or re-arming the free-running render loop below. The 60ms saver
+            // timer drives the bouncing logo/tile frames (plain Slint elements,
+            // independent of the map FBO). Skipping here drops the idle
+            // screensaver from a pegged core to near-zero.
+            //
+            // This is only safe BECAUSE the map is covered: the live map must
+            // render every frame (V3D discards the transient FBO colour
+            // attachment otherwise -- see SlintMapGL::render), which is why the
+            // stage-0 path below re-arms the loop unconditionally.
+            if (win->get_saver_state() != 0)
+                break;
+
+            GLint pf = 0;
+            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &pf);
+            GLint vp[4] = {0, 0, 0, 0};
+            glGetIntegerv(GL_VIEWPORT, vp);
+            GLint prog = 0;
+            glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
+            GLint arrayBuf = 0;
+            glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &arrayBuf);
+            GLint elemBuf = 0;
+            glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &elemBuf);
+            GLint activeTex = 0;
+            glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTex);
+            GLboolean blend = glIsEnabled(GL_BLEND);
+            GLboolean depth = glIsEnabled(GL_DEPTH_TEST);
+            GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
+            GLboolean cull = glIsEnabled(GL_CULL_FACE);
+
+            // Render the live map into the FBO; the MMapView shows it in stage
+            // 0. While the screensaver runs the opaque Slint overlay covers it.
+            // ALWAYS render (V3D discards a skipped FBO -> gray). The CPU saving
+            // during a render-pause comes from NOT re-arming the loop below, so
+            // the last good frame is composited once and then held on screen.
+            const bool map_paused = map_render_paused();
+            smap->render();
+
+            glBindFramebuffer(GL_FRAMEBUFFER, pf);
+            glViewport(vp[0], vp[1], vp[2], vp[3]);
+            glUseProgram(prog);
+            glBindBuffer(GL_ARRAY_BUFFER, arrayBuf);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elemBuf);
+            glActiveTexture(activeTex);
+            if (blend)
+                glEnable(GL_BLEND);
+            else
+                glDisable(GL_BLEND);
+            if (depth)
+                glEnable(GL_DEPTH_TEST);
+            else
+                glDisable(GL_DEPTH_TEST);
+            if (scissor)
+                glEnable(GL_SCISSOR_TEST);
+            else
+                glDisable(GL_SCISSOR_TEST);
+            if (cull)
+                glEnable(GL_CULL_FACE);
+            else
+                glDisable(GL_CULL_FACE);
+
+            // The persistent full-screen MMapView shows whatever we composited
+            // into the FBO (live map, or black + bouncing logo/tile).
+            win->global<MMapAdapter>().set_frame(
+                slint::Image::create_from_borrowed_gl_2d_rgba_texture(
+                    *tex,
+                    {static_cast<uint32_t>(*Wp), static_cast<uint32_t>(*Hp)},
+                    slint::Image::BorrowedOpenGLTextureOrigin::BottomLeft));
+            // Re-arm the free-running render loop ONLY when not paused. While
+            // paused we stop requesting redraws, so this just-composited good
+            // frame is the last one presented and stays on screen (V3D-safe,
+            // no gray). The 60ms saver timer restarts the loop on un-pause.
+            if (!map_paused)
+                win->window().request_redraw();
+            break;
+        }
+        case slint::RenderingState::AfterRendering: {
+            // Pixel-readback self-test: with the bounce frozen at (40,40), scan
+            // the 140x140 logo/tile region of the actual displayed framebuffer
+            // and report. Stage 1 (DVD) -> some non-black; stage 2 (tile) ->
+            // mostly non-black map colour; stage 3 (off) -> all black.
+            if (selftest && *gl_ready) {
+                static int f = 0;
+                ++f;
+                if (f % 120 == 0 && f <= 1800) {  // every ~2s for ~30s
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+                    int nonblack = 0, total = 0, sr = 0, sg = 0, sb = 0;
+                    for (int y = 44; y < 176; y += 8)
+                        for (int x = 44; x < 176; x += 8) {
+                            unsigned char px[4] = {0, 0, 0, 0};
+                            glReadPixels(x, *Hp - 1 - y, 1, 1, GL_RGBA,
+                                         GL_UNSIGNED_BYTE, px);
+                            ++total;
+                            if (px[0] + px[1] + px[2] > 24) {
+                                ++nonblack;
+                                sr += px[0];
+                                sg += px[1];
+                                sb += px[2];
+                            }
+                        }
+                    std::cout << "[selftest] f=" << f
+                              << " saver-state=" << win->get_saver_state()
+                              << " region(40,40,140,140): " << nonblack << "/"
+                              << total << " non-black";
+                    if (nonblack)
+                        std::cout << " avg=" << sr / nonblack << ","
+                                  << sg / nonblack << "," << sb / nonblack;
+                    std::cout << " glErr=" << glGetError() << std::endl;
+                }
+            }
+            break;
+        }
+        case slint::RenderingState::RenderingTeardown: {
+            std::cout << "[main_gl] RenderingTeardown" << std::endl;
+            if (*fbo)
+                glDeleteFramebuffers(1, fbo.get());
+            if (*rbo)
+                glDeleteRenderbuffers(1, rbo.get());
+            if (*tex)
+                glDeleteTextures(1, tex.get());
+            *fbo = *rbo = *tex = 0;
+            *gl_ready = false;
+            break;
+        }
+        }
+    });
+
+    // Touch / pointer interaction (Slint delivers touch via libinput as pointer
+    // events; the MMapView forwards them through these MMapAdapter callbacks).
+    win->global<MMapAdapter>().on_mouse_pressed(
+        [=](float x, float y) { smap->handle_mouse_press(x, y); });
+    win->global<MMapAdapter>().on_mouse_released(
+        [=](float, float) { smap->handle_mouse_release(); });
+    win->global<MMapAdapter>().on_mouse_moved(
+        [=](float x, float y) { smap->handle_mouse_move(x, y, true); });
+    // Double-tap is detected inside handle_mouse_press (touchscreens do not
+    // reliably emit Slint's double-clicked), so on_double_clicked is left
+    // unwired to avoid double-triggering with a real mouse.
+    win->global<MMapAdapter>().on_wheel_zoomed(
+        [=](float x, float y, float dy) { smap->handle_wheel_zoom(x, y, dy); });
+
+    // Physical mouse-wheel zoom (kaga-specific; not part of the upstream app).
+    // Slint's linuxkms backend only forwards Motion/MotionAbsolute/Button
+    // libinput events (internal/backends/linuxkms/calloop_backend/input.rs);
+    // PointerEvent::Axis (wheel/scroll) falls through its `_ => {}` and is
+    // silently dropped -- confirmed by reading that source, and consistent
+    // with touch/mouse click+drag both working fine (those map to the
+    // variants Slint does forward). There is no supported hook to receive
+    // wheel events through Slint's own event system in the C++ API, so this
+    // reads the raw evdev node directly -- the same kind of exception as the
+    // idle-activity watcher further down (Slint has no path for this at
+    // all), kept to exactly the one signal it's needed for.
+    //
+    // Thread safety follows the net_ssid pattern below: the reader thread
+    // only ever touches a plain atomic (no Slint/mbgl call from off the UI
+    // thread); flyto_timer's existing 200ms poll (already the home for other
+    // background-thread-to-UI handoffs) drains it and calls smap->
+    // handle_wheel_zoom() directly -- the exact same call the registered
+    // on_wheel_zoomed handler above makes, so this is a second caller of
+    // that function, not a second code path.
+    //
+    // MAPLIBRE_WHEEL_DEVS overrides the auto-scan (comma-separated paths),
+    // matching MAPLIBRE_INPUT_DEVS's convention below.
+    auto wheel_clicks = std::make_shared<std::atomic<int>>(0);
+    {
+        auto wc = wheel_clicks;
+        std::thread([wc]() {
+            auto has_rel_wheel = [](int fd) {
+                unsigned long bits[(REL_MAX / (8 * sizeof(unsigned long))) + 1];
+                std::memset(bits, 0, sizeof(bits));
+                if (ioctl(fd, EVIOCGBIT(EV_REL, sizeof(bits)), bits) < 0)
+                    return false;
+                return ((bits[REL_WHEEL / (8 * sizeof(unsigned long))] >>
+                         (REL_WHEEL % (8 * sizeof(unsigned long)))) &
+                        1UL) != 0;
+            };
+            std::vector<std::string> paths;
+            if (const char* env = std::getenv("MAPLIBRE_WHEEL_DEVS")) {
+                std::string s(env), cur;
+                for (char c : s) {
+                    if (c == ',') {
+                        if (!cur.empty())
+                            paths.push_back(cur);
+                        cur.clear();
+                    } else {
+                        cur += c;
+                    }
+                }
+                if (!cur.empty())
+                    paths.push_back(cur);
+            } else if (DIR* d = opendir("/dev/input")) {
+                while (struct dirent* e = readdir(d)) {
+                    if (std::strncmp(e->d_name, "event", 5) != 0)
+                        continue;
+                    std::string path = std::string("/dev/input/") + e->d_name;
+                    int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
+                    if (fd < 0)
+                        continue;
+                    if (has_rel_wheel(fd))
+                        paths.push_back(path);
+                    close(fd);
+                }
+                closedir(d);
+            }
+            std::vector<pollfd> pfds;
+            for (auto& p : paths) {
+                int fd = open(p.c_str(), O_RDONLY | O_NONBLOCK);
+                if (fd >= 0)
+                    pfds.push_back({fd, POLLIN, 0});
+            }
+            if (pfds.empty()) {
+                std::cout << "[wheel] no REL_WHEEL-capable device found "
+                             "(set MAPLIBRE_WHEEL_DEVS to override)"
+                          << std::endl;
+                return;
+            }
+            std::cout << "[wheel] watching " << pfds.size() << " device(s)"
+                      << std::endl;
+            struct input_event ev;
+            while (true) {
+                int r = poll(pfds.data(), pfds.size(), -1);
+                if (r <= 0)
+                    continue;
+                for (auto& pf : pfds) {
+                    if (!(pf.revents & POLLIN))
+                        continue;
+                    while (read(pf.fd, &ev, sizeof(ev)) == sizeof(ev)) {
+                        if (ev.type != EV_REL || ev.code != REL_WHEEL ||
+                            ev.value == 0)
+                            continue;
+                        // +1 per detent scrolled up/away, -1 down/toward --
+                        // the usual convention. Sign flipped at drain time
+                        // to match handle_wheel_zoom's dy<0=in convention.
+                        wc->fetch_add(ev.value, std::memory_order_relaxed);
+                    }
+                }
+            }
+        }).detach();
+    }
+
+    // Toolbar commands (dropdown / buttons / sliders).
+    win->global<MMapAdapter>().on_request_style_change(
+        [=](const slint::SharedString& u) {
+            smap->setStyleUrl(std::string(u.data(), u.size()));
+        });
+    win->global<MMapAdapter>().on_request_fly_to(
+        [=](float lat, float lon, float z) { smap->fly_to(lat, lon, z); });
+    win->global<MMapAdapter>().on_request_zoom_change(
+        [=](float z) { smap->set_zoom(z); });
+    win->global<MMapAdapter>().on_request_pitch_change(
+        [=](float p) { smap->set_pitch(p); });
+    win->global<MMapAdapter>().on_request_bearing_change(
+        [=](float b) { smap->set_bearing(b); });
+
+    win->on_map_size_changed([=]() {});
+
+    // "Dance" button: start/stop the pitch+bearing animation at the current view.
+    win->on_set_dance([=](bool on) { smap->set_dance(on); });
+
+    // "Sync" checkbox: when on, the stage timer feeds pitch+bearing from
+    // /dev/shm/pi-orientation (written by pi-orient; tmpfs = no microSD wear).
+    // Toggling off restores a flat, north-up camera.
+    auto sync_on = std::make_shared<std::atomic<bool>>(false);
+    const std::string orient_path =
+        std::getenv("MAPLIBRE_ORIENTATION_FILE")
+            ? std::getenv("MAPLIBRE_ORIENTATION_FILE")
+            : std::string("/dev/shm/pi-orientation");
+    const std::string gps_path =
+        std::getenv("MAPLIBRE_GPS_FILE")
+            ? std::getenv("MAPLIBRE_GPS_FILE")
+            : std::string("/dev/shm/pi-gps");
+    // Meshtastic node positions, published by pi-meshtastic.service as
+    // "<id> <lat> <lon> <epoch> <shortName>" per line (empty file = nothing
+    // positioned). Plotted as markers; the map knows nothing about the radio.
+    const std::string mesh_nodes_path =
+        std::getenv("MAPLIBRE_MESH_NODES_FILE")
+            ? std::getenv("MAPLIBRE_MESH_NODES_FILE")
+            : std::string("/dev/shm/pi-mesh-nodes");
+    // This host's own last GPS fix, "<lat> <lon> <epoch>", published by
+    // pi-gps-track. /dev/shm/pi-gps alone cannot serve: it keeps republishing
+    // the last known position with fix=0, with no record of when the fix was.
+    const std::string self_fix_path =
+        std::getenv("MAPLIBRE_SELF_FIX_FILE")
+            ? std::getenv("MAPLIBRE_SELF_FIX_FILE")
+            : std::string("/dev/shm/pi-gps-lastfix");
+    // A position older than this is drawn faded: still useful, clearly not now.
+    const int64_t marker_stale_secs =
+        std::getenv("MAPLIBRE_MARKER_STALE_SECS")
+            ? std::atoll(std::getenv("MAPLIBRE_MARKER_STALE_SECS"))
+            : 600;
+    // Own marker's label: this host, so it reads as a place on the map rather
+    // than as "self". MAPLIBRE_SELF_LABEL overrides.
+    std::string self_label = "here";
+    if (const char* e = std::getenv("MAPLIBRE_SELF_LABEL")) {
+        self_label = e;
+    } else {
+        char hn[128] = {0};
+        if (::gethostname(hn, sizeof(hn) - 1) == 0 && hn[0])
+            self_label = hn;
+    }
+    auto mesh_seen = std::make_shared<std::string>();   // last raw contents
+    auto mesh_minute = std::make_shared<int64_t>(-1);   // last age recompute
+    win->on_sync_toggled([=](bool on) {
+        sync_on->store(on);
+        if (!on) {
+            smap->set_orientation(0.0, 0.0);
+            win->window().request_redraw();
+        }
+    });
+
+    // Keyboard arrow-key pan (Shift+Up/Down zoom is handled in the .slint).
+    win->on_pan([=](float dx, float dy) { smap->handle_pan(dx, dy); });
+
+    // ---------------------------------------------------------------------
+    // Staged idle screensaver (pi4-s-d appliance feature; NEVER upstreamed).
+    //
+    //   0 normal
+    //   1 DVD logo bounce            [SAVER_SECS .. OFF)
+    //   3 off / black                [OFF ..)
+    //
+    // (Stage 2, the bouncing pre-rendered map tile, is added in a later pass.)
+    //
+    // OFF is power-aware via PiSugar/pi-power: on AC the panel stays alive far
+    // longer than on battery. Any input (raw evdev watcher, or the overlay's
+    // wake() tap) resets the idle clock and restores the live map.
+    // ---------------------------------------------------------------------
+
+    // (a) Raw evdev activity watcher. Reading the input nodes directly means a
+    //     keyboard press counts as activity too (the map only ever sees pointer
+    //     events), and a tap registers even while the black overlay is up.
+    {
+        auto la = last_activity;
+        std::thread([la]() {
+            std::vector<std::string> paths;
+            if (const char* env = std::getenv("MAPLIBRE_INPUT_DEVS")) {
+                std::string s(env), cur;
+                for (char c : s) {
+                    if (c == ',') {
+                        if (!cur.empty())
+                            paths.push_back(cur);
+                        cur.clear();
+                    } else {
+                        cur += c;
+                    }
+                }
+                if (!cur.empty())
+                    paths.push_back(cur);
+            } else if (DIR* d = opendir("/dev/input")) {
+                while (struct dirent* e = readdir(d)) {
+                    if (std::strncmp(e->d_name, "event", 5) == 0)
+                        paths.push_back(std::string("/dev/input/") + e->d_name);
+                }
+                closedir(d);
+            }
+            std::vector<pollfd> pfds;
+            for (auto& p : paths) {
+                int fd = open(p.c_str(), O_RDONLY | O_NONBLOCK);
+                if (fd >= 0)
+                    pfds.push_back({fd, POLLIN, 0});
+            }
+            if (pfds.empty())
+                return;
+            char buf[256];
+            while (true) {
+                int r = poll(pfds.data(), pfds.size(), 1000);
+                if (r <= 0)
+                    continue;
+                bool any = false;
+                for (auto& pf : pfds) {
+                    if (pf.revents & POLLIN) {
+                        while (read(pf.fd, buf, sizeof(buf)) > 0) {
+                        }
+                        any = true;
+                    }
+                }
+                if (any)
+                    la->store(now_ms());
+            }
+        }).detach();
+    }
+
+    // (a2) Keyboard x2 -> wake, on Ctrl+C, Enter or Esc. The touch watcher (a)
+    //   is restricted to the touchscreen (MAPLIBRE_INPUT_DEVS) so stray
+    //   HID/HDMI "keys" can't wake the screensaver, but a deliberate press
+    //   repeated within 1.5s on a real keyboard also wakes -- handy over a USB
+    //   or Bluetooth keyboard without reaching for the panel. ONLY these wake
+    //   (arbitrary keys are ignored); doubling is what keeps a stray press from
+    //   counting. Enter and Esc are there because Ctrl+C needs two keys held
+    //   together, which a small keyboard may not report reliably -- and because
+    //   they are the two keys anyone tries first on a screen that looks stuck.
+    //   Keyboards are auto-discovered by KEY_C capability
+    //   (excludes the USB-mic HID and HDMI nodes, which lack letter keys) and
+    //   re-scanned every 2s so a Bluetooth keyboard paired after boot is picked
+    //   up; a device that disappears (BT disconnect) is dropped and re-added on
+    //   reconnect.
+    {
+        auto la = last_activity;
+        std::thread([la]() {
+            struct KbdFd {
+                int fd;
+                std::string path;
+            };
+            std::vector<KbdFd> kbds;
+            auto has_key_c = [](int fd) {
+                unsigned long bits[(KEY_MAX / (8 * sizeof(unsigned long))) + 1];
+                std::memset(bits, 0, sizeof(bits));
+                if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(bits)), bits) < 0)
+                    return false;
+                return ((bits[KEY_C / (8 * sizeof(unsigned long))] >>
+                         (KEY_C % (8 * sizeof(unsigned long)))) &
+                        1UL) != 0;
+            };
+            auto rescan = [&]() {
+                DIR* d = opendir("/dev/input");
+                if (!d)
+                    return;
+                while (struct dirent* e = readdir(d)) {
+                    if (std::strncmp(e->d_name, "event", 5) != 0)
+                        continue;
+                    std::string path = std::string("/dev/input/") + e->d_name;
+                    bool open_already = false;
+                    for (auto& k : kbds)
+                        if (k.path == path) {
+                            open_already = true;
+                            break;
+                        }
+                    if (open_already)
+                        continue;
+                    int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
+                    if (fd < 0)
+                        continue;
+                    if (has_key_c(fd))
+                        kbds.push_back({fd, path});
+                    else
+                        close(fd);
+                }
+                closedir(d);
+            };
+            bool ctrl_down = false;
+            // Time of the previous qualifying press, per key (0 = none
+            // pending). Kept separate so alternating Enter and Esc does not
+            // count as a double of either.
+            int64_t last_cc = 0, last_enter = 0, last_esc = 0;
+            int64_t last_scan = 0;
+            while (true) {
+                int64_t now = now_ms();
+                if (now - last_scan > 2000) {   // pick up USB/BT hotplug
+                    rescan();
+                    last_scan = now;
+                }
+                if (kbds.empty()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                    continue;
+                }
+                std::vector<pollfd> pfds;
+                pfds.reserve(kbds.size());
+                for (auto& k : kbds)
+                    pfds.push_back({k.fd, POLLIN, 0});
+                if (poll(pfds.data(), pfds.size(), 1000) <= 0)
+                    continue;
+                for (size_t i = 0; i < pfds.size(); ++i) {
+                    if (pfds[i].revents & (POLLERR | POLLHUP)) {
+                        close(kbds[i].fd);   // device gone (e.g. BT disconnect)
+                        kbds[i].fd = -1;
+                        continue;
+                    }
+                    if (!(pfds[i].revents & POLLIN))
+                        continue;
+                    struct input_event ev;
+                    ssize_t n;
+                    while ((n = read(pfds[i].fd, &ev, sizeof(ev))) ==
+                           (ssize_t)sizeof(ev)) {
+                        if (ev.type != EV_KEY)
+                            continue;
+                        if (ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL) {
+                            ctrl_down = (ev.value != 0);   // 1=press, 2=repeat
+                        } else if (ev.value == 1) {
+                            // value 1 = press (2 is auto-repeat, which must not
+                            // count: holding the key down would wake by itself).
+                            int64_t* prev = nullptr;
+                            if (ev.code == KEY_C && ctrl_down)
+                                prev = &last_cc;
+                            else if (ev.code == KEY_ENTER ||
+                                     ev.code == KEY_KPENTER)
+                                prev = &last_enter;
+                            else if (ev.code == KEY_ESC)
+                                prev = &last_esc;
+                            if (prev) {
+                                int64_t t = now_ms();
+                                if (*prev != 0 && t - *prev <= 1500) {
+                                    la->store(t);   // twice within 1.5s -> wake
+                                    *prev = 0;
+                                } else {
+                                    *prev = t;
+                                }
+                            }
+                        }
+                    }
+                    if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                        close(kbds[i].fd);
+                        kbds[i].fd = -1;
+                    }
+                }
+                kbds.erase(std::remove_if(kbds.begin(), kbds.end(),
+                                          [](const KbdFd& k) { return k.fd < 0; }),
+                           kbds.end());
+            }
+        }).detach();
+    }
+
+    // (b) Overlay tap -> wake.
+    win->on_wake([=]() { last_activity->store(now_ms()); });
+
+    // (c) Power-state poller (PiSugar via pi-power). AC -> long OFF timeout,
+    //     battery -> short. Polled off the UI thread so nc never stalls it.
+    auto plugged = std::make_shared<std::atomic<bool>>(true);
+    auto battery_pct = std::make_shared<std::atomic<int>>(-1);  // -1 = unknown
+    {
+        auto pl = plugged;
+        auto bp = battery_pct;
+        std::string home = std::getenv("HOME") ? std::getenv("HOME") : "/home/pi";
+        std::string cmd = home + "/.local/bin/pi-power 2>/dev/null";
+        std::thread([pl, bp, cmd]() {
+            while (true) {
+                bool p = pl->load();
+                int pct = bp->load();
+                if (FILE* fp = popen(cmd.c_str(), "r")) {
+                    char line[160];
+                    while (std::fgets(line, sizeof(line), fp)) {
+                        if (std::strstr(line, "battery_power_plugged"))
+                            p = std::strstr(line, "true") != nullptr;
+                        else if (std::strncmp(line, "battery:", 8) == 0)
+                            pct = static_cast<int>(std::lround(std::atof(line + 8)));
+                    }
+                    pclose(fp);
+                }
+                pl->store(p);
+                bp->store(pct);
+                std::this_thread::sleep_for(std::chrono::seconds(30));
+            }
+        }).detach();
+    }
+
+    // (c2) Network poller. net-state: 0 = the interface is not up (Wi-Fi
+    //      dropped / no carrier) -> grey icon with a red X; 1 = up but no
+    //      default route (associated, no gateway) -> yellow; 2 = up with a
+    //      default route -> green. The interface is whichever owns the default
+    //      route (so it follows Wi-Fi vs Ethernet), overridable with
+    //      MAPLIBRE_NET_IFACE, falling back to wlan0. Off the UI thread.
+    auto net_state = std::make_shared<std::atomic<int>>(0);
+    auto net_ssid = std::make_shared<std::string>();
+    auto net_ssid_mtx = std::make_shared<std::mutex>();
+    auto kbd_conn = std::make_shared<std::atomic<bool>>(false);
+    auto mic_present = std::make_shared<std::atomic<bool>>(false);
+    auto mic_state = std::make_shared<std::atomic<int>>(0);
+    {
+        auto ns = net_state;
+        const char* ifenv = std::getenv("MAPLIBRE_NET_IFACE");
+        std::string iface_override = ifenv ? ifenv : "";
+        std::thread([ns, iface_override, net_ssid, net_ssid_mtx, kbd_conn,
+                     mic_present, mic_state, last_activity]() {
+            while (true) {
+                // Default-route interface from /proc/net/route (the line whose
+                // hex Destination is 00000000).
+                std::string defroute_if;
+                {
+                    std::ifstream r("/proc/net/route");
+                    std::string ifn, dest, rest;
+                    std::getline(r, rest);  // header
+                    while (r >> ifn >> dest) {
+                        std::getline(r, rest);  // discard the rest of the row
+                        if (dest == "00000000") {
+                            defroute_if = ifn;
+                            break;
+                        }
+                    }
+                }
+                std::string iface = !iface_override.empty() ? iface_override
+                                    : !defroute_if.empty()  ? defroute_if
+                                                            : std::string("wlan0");
+                std::string oper;
+                {
+                    std::ifstream o("/sys/class/net/" + iface + "/operstate");
+                    std::getline(o, oper);
+                }
+                const bool up = (oper == "up");
+                const bool have_route = !defroute_if.empty();
+                ns->store(!up ? 0 : (have_route ? 2 : 1));
+
+                // Current SSID for the status bar. Bounded at the 802.11
+                // maximum only; fitting it to the bar is the UI's job (the
+                // label elides), because a codepoint count cannot know where a
+                // proportional font actually runs out of room.
+                std::string ssid;
+                {
+                    std::string cmd =
+                        "/usr/sbin/iw dev " + iface + " link 2>/dev/null";
+                    if (FILE* fp = popen(cmd.c_str(), "r")) {
+                        char buf[256];
+                        while (fgets(buf, sizeof buf, fp)) {
+                            const char* p = std::strstr(buf, "SSID: ");
+                            if (p) {
+                                ssid = p + 6;
+                                while (!ssid.empty() && (ssid.back() == '\n' ||
+                                                         ssid.back() == '\r'))
+                                    ssid.pop_back();
+                                break;
+                            }
+                        }
+                        pclose(fp);
+                    }
+                    size_t i = 0, cps = 0;
+                    while (i < ssid.size() && cps < 32) {
+                        unsigned char c = (unsigned char)ssid[i];
+                        i += (c < 0x80)         ? 1
+                             : (c >> 5) == 0x6  ? 2
+                             : (c >> 4) == 0xE  ? 3
+                             : (c >> 3) == 0x1E ? 4
+                                                : 1;
+                        ++cps;
+                    }
+                    ssid.resize(i);
+                }
+                {
+                    std::lock_guard<std::mutex> lk(*net_ssid_mtx);
+                    *net_ssid = ssid;
+                }
+
+                // External keyboard connected? A /proc/bus/input/devices block
+                // on Bus=0003 (USB) or Bus=0005 (Bluetooth) whose Handlers
+                // include "kbd". HDMI-CEC (Bus=001e) and platform pseudo-
+                // keyboards live on other buses, so they are excluded.
+                //
+                // "Handlers=kbd" alone is not enough: a USB sound card exposes
+                // its volume buttons as an HID with KEY_MUTE/VOLUMEUP/DOWN, so
+                // plugging in a mic used to light the keyboard indicator. Ask
+                // for the top letter row (KEY_Q..KEY_P, codes 16-25) as well.
+                // Those codes are layout-independent -- evdev reports position,
+                // not the printed legend -- so every real keyboard has them and
+                // a volume-key HID has none.
+                constexpr unsigned long long LETTER_ROW = 0x03FF0000ULL;
+                bool kbd = false;
+                {
+                    std::ifstream pf("/proc/bus/input/devices");
+                    std::string line;
+                    bool ext = false, has_kbd = false, has_letters = false;
+                    auto flush = [&]() {
+                        if (ext && has_kbd && has_letters)
+                            kbd = true;
+                    };
+                    while (std::getline(pf, line)) {
+                        if (line.empty()) {
+                            flush();
+                            if (kbd)
+                                break;
+                            ext = has_kbd = has_letters = false;
+                        } else if (line.rfind("I:", 0) == 0) {
+                            ext = line.find("Bus=0005") != std::string::npos ||
+                                  line.find("Bus=0003") != std::string::npos;
+                        } else if (line.rfind("H: Handlers=", 0) == 0) {
+                            has_kbd = line.find("kbd") != std::string::npos;
+                        } else if (line.rfind("B: KEY=", 0) == 0) {
+                            // Groups run most-significant first, so the last
+                            // one holds codes 0-63 -- where the letters are.
+                            const size_t sp = line.find_last_of(' ');
+                            const std::string last =
+                                sp == std::string::npos ? std::string()
+                                                        : line.substr(sp + 1);
+                            const unsigned long long bits =
+                                last.empty() ? 0ULL
+                                             : std::strtoull(last.c_str(),
+                                                             nullptr, 16);
+                            has_letters = (bits & LETTER_ROW) == LETTER_ROW;
+                        }
+                    }
+                    flush();
+                }
+                kbd_conn->store(kbd);
+
+                // Microphone present? Any ALSA PCM that can capture. Reading
+                // /proc/asound/pcm avoids forking arecord every few seconds,
+                // and covers USB, I2S and HAT mics alike.
+                bool mic = false;
+                {
+                    std::ifstream af("/proc/asound/pcm");
+                    std::string line;
+                    while (std::getline(af, line)) {
+                        if (line.find("capture") != std::string::npos) {
+                            mic = true;
+                            break;
+                        }
+                    }
+                }
+                mic_present->store(mic);
+
+                // Who is using it? pi-hear publishes a word to
+                // /dev/shm/pi-hear-state and keeps it fresh, so a stale file
+                // means pi-hear is not running -- which is a different thing
+                // from pi-hear sitting idle, and should not read as "ready".
+                int mstate = 0;
+                if (mic) {
+                    struct stat st {};
+                    if (::stat("/dev/shm/pi-hear-state", &st) == 0) {
+                        const int64_t rt =
+                            std::chrono::duration_cast<std::chrono::seconds>(
+                                std::chrono::system_clock::now()
+                                    .time_since_epoch())
+                                .count();
+                        if (rt - static_cast<int64_t>(st.st_mtim.tv_sec) < 5) {
+                            std::ifstream sf("/dev/shm/pi-hear-state");
+                            std::string word;
+                            std::getline(sf, word);
+                            if (word == "listening")
+                                mstate = 2;
+                            else if (word == "asr" || word == "muted")
+                                mstate = 1;
+                            // Talking to the map counts as using it. The idle
+                            // clock is otherwise touch-only, which left the
+                            // saver free to arrive mid-sentence -- and pi-hear
+                            // pauses itself once it does, so the deck stops
+                            // listening exactly when it is being spoken to.
+                            //
+                            // This defers; it does not wake. Waking a black
+                            // screen on a noise is the thing the touch-only
+                            // rule was protecting against, and nothing here is
+                            // reachable without the wake word having matched.
+                            if (maplibre_slint::voice_is_active(word))
+                                last_activity->store(now_ms());
+                        }
+                    }
+                }
+                mic_state->store(mstate);
+
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+            }
+        }).detach();
+    }
+
+    // (d) Stage driver: a 60ms repeating timer on the UI thread. The
+    //     screensaver never touches the live map (tiles are pre-rendered PNGs),
+    //     so this just drives the stage, the bounce, the DVD recolour, and the
+    //     cached-tile swap.
+    const int64_t saver_secs = env_secs("MAPLIBRE_SAVER_SECS", 300);    // 5 min
+    const int64_t dvd_secs = env_secs("MAPLIBRE_DVD_SECS", 1800);       // +30 min
+    const int64_t off_ac = env_secs("MAPLIBRE_OFF_AC_SECS", 43200);     // 12 h
+    const int64_t off_batt = env_secs("MAPLIBRE_OFF_BATT_SECS", 1800);  // 30 min
+    static const uint32_t COLORS[6] = {0xff5050, 0x50c8ff, 0x78ff78,
+                                       0xffdc50, 0xdc78ff, 0xff9650};
+
+    struct SaverState {
+        float bx = 40.f, by = 40.f, bvx = 3.75f, bvy = 3.0f;
+        int ci = 0;
+        int prev = -1;
+        size_t show = 0;
+        int otick = 0;                  // sensor-read throttle counter
+        char clock[6] = "";             // last "HH:MM" pushed to the UI
+        int cap_tick = 0;               // drives the working animation's dots
+        std::string cap_word, cap_text; // last caption pushed (change gate)
+        float wave_level = 0.f;         // smoothed input level for the wave
+        int voice_stage = 0;            // 0 idle, 1 armed, 2 thinking
+        float la_pitch = 1e9f;          // last applied pitch/bearing (change gate)
+        float la_bearing = 1e9f;
+        double la_lat = 1e9, la_lon = 1e9;   // last applied GPS centre (change gate)
+    };
+    auto ss = std::make_shared<SaverState>();
+
+    auto saver_timer = std::make_shared<slint::Timer>();
+    saver_timer->start(
+        slint::TimerMode::Repeated, std::chrono::milliseconds(60), [=]() {
+            int64_t idle = (now_ms() - last_activity->load()) / 1000;
+            int64_t off = plugged->load() ? off_ac : off_batt;
+            int stage = idle >= off                     ? 3
+                        : idle >= saver_secs + dvd_secs  ? 2
+                        : idle >= saver_secs             ? 1
+                                                         : 0;
+
+            if (stage != ss->prev) {
+                if (stage == 1)
+                    win->set_dvd_image(dvd_tinted(*dvd_mask, COLORS[ss->ci]));
+                if (stage == 2 && !tiles->empty()) {
+                    ss->show %= tiles->size();
+                    win->set_tile_image((*tiles)[ss->show]);
+                }
+                std::cout << "[saver] stage -> " << stage << " (idle " << idle
+                          << "s, " << (plugged->load() ? "AC" : "battery") << ")"
+                          << std::endl;
+                ss->prev = stage;
+                // Publish the saver stage so pi-hear can pause listening while
+                // the screensaver is up (stage>=1). Idle is touch-to-wake, not
+                // voice-wake (fewer false triggers, lower CPU). tmpfs, no SD wear.
+                if (FILE* sf = ::fopen("/dev/shm/pi-saver-stage", "w")) {
+                    ::fprintf(sf, "%d\n", stage);
+                    ::fclose(sf);
+                }
+                win->window().request_redraw();
+            }
+            // Wall clock. This timer runs at 60ms, but the readout only
+            // changes once a minute, so only touch the property then: a
+            // SharedString assignment 16x/s would be pure churn in the render
+            // budget. Rendering is continuous, so no explicit redraw is needed.
+            {
+                char hhmm[6];
+                const std::time_t t = std::time(nullptr);
+                std::tm tm{};
+                if (::localtime_r(&t, &tm) &&
+                    std::strftime(hhmm, sizeof hhmm, "%H:%M", &tm) &&
+                    std::strcmp(hhmm, ss->clock) != 0) {
+                    std::memcpy(ss->clock, hhmm, sizeof hhmm);
+                    win->set_clock_text(slint::SharedString(hhmm));
+                }
+            }
+
+            // Caption + working animation, at ~4 Hz. The animation is the text
+            // itself -- C++ appends the dots -- so its frame rate is exactly
+            // how often this block runs, rather than something Slint decides.
+            // That matters because recognition deliberately freezes the map to
+            // hand whisper the CPU: an indicator that re-armed the render loop
+            // at 60 fps would claw back the very cycles it is reporting on.
+            ++ss->cap_tick;
+            bool cap_busy = false;
+            if (ss->cap_tick % 4 == 0) {
+                std::string word, text, caption, lang;
+                int stage = 0;
+                if (read_hear_state(word, text, lang)) {
+                    const bool en = (lang == "en");
+                    // "heard" carries the transcription, which is deliberately
+                    // not shown: it is usually mangled, it is unreadable at
+                    // this size, and it is the machine's business rather than
+                    // the reader's -- the journal still has it. Visually it
+                    // stays "thinking", because the device is still deciding
+                    // and acting; blanking here would flash an empty box
+                    // between thinking and the reply.
+                    if (word == "asr" || word == "heard") {
+                        cap_busy = true;
+                        stage = 2;
+                        static const char* DOTS[4] = {"", ".", "..", "..."};
+                        caption = std::string(en ? "Thinking" : "考え中") +
+                                  DOTS[(ss->cap_tick / 4) % 4];
+                    } else if (word == "armed") {
+                        stage = 1;
+                        caption = en ? "Listening" : "お話しください";
+                        cap_busy = true;
+                    } else if (word == "speaking") {
+                        caption = text;
+                    }
+                }
+                ss->voice_stage = stage;
+                win->set_voice_stage(stage);
+                // Short enough for the status bar, and legible in the language
+                // it names: someone listening in Japanese reads 日 faster than
+                // "JA". Empty when pi-hear is not running, so the strip shows
+                // nothing rather than a stale language.
+                win->set_mic_lang(slint::SharedString(
+                    lang.empty() ? "" : (lang == "en" ? "En" : "日")));
+                if (word != ss->cap_word || caption != ss->cap_text) {
+                    ss->cap_word = word;
+                    ss->cap_text = caption;
+                    win->set_caption_text(slint::SharedString(caption.c_str()));
+                    win->set_caption_busy(cap_busy);
+                    // While the map is paused nothing re-arms the loop, so the
+                    // new text would sit undrawn until recognition ended --
+                    // exactly when it is no longer needed.
+                    if (map_render_paused())
+                        win->window().request_redraw();
+                }
+            }
+
+            // The waveform only runs while armed, which is also the only time
+            // the recogniser is not holding the CPU -- so the expensive-looking
+            // half of this UI happens exactly when there is room for it, and
+            // the thinking animation, which runs when there is not, is four
+            // text updates a second.
+            if (ss->voice_stage == 1) {
+                const float target = read_hear_level();
+                // Same follow constant as acaption: fast enough to feel live,
+                // slow enough that a single loud block does not snap the wave.
+                ss->wave_level += (target - ss->wave_level) * 0.35f;
+                const double t =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count() /
+                    1000.0;
+                win->set_wave_path(slint::SharedString(
+                    wave_commands(ss->wave_level, t).c_str()));
+                float pulse = ss->wave_level * 1.8f;
+                win->set_wave_pulse(pulse > 1.f ? 1.f : pulse);
+            } else if (ss->wave_level != 0.f) {
+                ss->wave_level = 0.f;
+                win->set_wave_pulse(0.f);
+            }
+
+            win->set_saver_state(stage);
+            win->set_battery_percent(battery_pct->load());
+            win->set_battery_plugged(plugged->load());
+            {
+                const int bpct = battery_pct->load();
+                const int bi = plugged->load() ? 0   // charging
+                               : bpct >= 80     ? 1   // full
+                               : bpct >= 55     ? 2   // high
+                               : bpct >= 30     ? 3   // middle
+                                                : 4;  // low
+                win->set_battery_icon((*battery_icons)[bi]);
+            }
+
+            // Sensor "Sync" feed: follow ALL sensors. /dev/shm/pi-orientation
+            // gives pitch+bearing, /dev/shm/pi-gps gives lat lon fix sats.
+            // Throttled to ~4 Hz and change-gated so a still device/position
+            // forces no re-renders (keeps the sensor processes from stealing the
+            // UI thread's render budget). Zoom is never touched.
+            if (++ss->otick % 4 == 0) {
+                const int64_t rt =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+                // max_age defaults to the 2s the sensor feeds are written at;
+                // slower publishers (the mesh node list is a 30s snapshot) pass
+                // their own budget.
+                auto fresh_ms = [rt](const std::string& path,
+                                     int64_t max_age = 2000) -> bool {
+                    struct stat st {};
+                    if (::stat(path.c_str(), &st) != 0)
+                        return false;
+                    int64_t m = (int64_t)st.st_mtim.tv_sec * 1000 +
+                                st.st_mtim.tv_nsec / 1000000;
+                    return (rt - m) < max_age;
+                };
+
+                double op = 0.0, ob = 0.0;
+                int ohave = 0;
+                const bool ofresh = fresh_ms(orient_path);
+                if (ofresh) {
+                    std::ifstream f(orient_path);
+                    f >> op >> ob >> ohave;
+                }
+                const bool orient_ok = ofresh && ohave == 1;
+
+                double glat = 0.0, glon = 0.0;
+                int gfix = 0, gsats = 0, ginview = 0;
+                const bool gfresh = fresh_ms(gps_path);
+                if (gfresh) {
+                    std::ifstream f(gps_path);
+                    f >> glat >> glon >> gfix >> gsats >> ginview;
+                }
+                const bool gps_ok = gfresh && gfix >= 1;
+
+                win->set_sensor_available(orient_ok || gps_ok);
+                // Status-bar satellite indicator: 0 = no device/stale (grey),
+                // 1 = present but no fix (yellow), 2 = fix (green).
+                const int gstate = !gfresh ? 0 : (gfix >= 1 ? 2 : 1);
+                win->set_gps_state(gstate);
+                win->set_gps_sats(ginview);
+                win->set_gps_icon((*sat_icons)[gstate]);
+
+                // Meshtastic node markers. Re-read only when the file's
+                // contents actually change, so a still mesh costs one stat +
+                // one small read per tick and never touches the style.
+                {
+                    // Both feeds are "last known position" files: they are not
+                    // required to be fresh, the line's own epoch says how old
+                    // the position is. Re-read only when the bytes change.
+                    std::string raw;
+                    {
+                        std::ifstream f(mesh_nodes_path);
+                        std::stringstream ss;
+                        ss << f.rdbuf();
+                        raw = ss.str();
+                    }
+                    {
+                        std::ifstream f(self_fix_path);
+                        std::stringstream ss;
+                        ss << f.rdbuf();
+                        raw += "\n#self " + ss.str();
+                    }
+                    const int64_t now_s = rt / 1000;
+                    // Age changes even when the files do not, so recompute
+                    // once a minute as well; the marker must fade on its own.
+                    // Tracking the minute (rather than testing now_s % 60)
+                    // keeps the stage timer from redoing this on every tick
+                    // within that second.
+                    const int64_t minute = now_s / 60;
+                    const bool age_tick = minute != *mesh_minute;
+                    if (raw != *mesh_seen || age_tick) {
+                        *mesh_minute = minute;
+                        *mesh_seen = raw;
+                        std::vector<SlintMapGL::MeshNode> nodes;
+
+                        std::istringstream ls(raw.substr(0, raw.find("\n#self ")));
+                        std::string line;
+                        while (std::getline(ls, line)) {
+                            std::istringstream ts(line);
+                            std::string id, name;
+                            double lat = 0.0, lon = 0.0;
+                            int64_t epoch = 0;
+                            if (!(ts >> id >> lat >> lon >> epoch >> name))
+                                continue;
+                            // A POI carries its palette slot in the id, as
+                            // "poi<slot>-<osmid>" (see geo.colour_slot). The
+                            // id is opaque to everything else here, which is
+                            // why the slot rides in it rather than in a sixth
+                            // column: the Meshtastic producer writes this same
+                            // format and knows nothing about slots. A radio
+                            // node, or an older "poi<osmid>" line, gets -1 and
+                            // the colour it always had.
+                            int colour = -1;
+                            if (id.rfind("poi", 0) == 0 && id.size() > 3
+                                && std::isdigit(static_cast<unsigned char>(id[3]))
+                                && id.find('-') == 4) {
+                                colour = id[3] - '0';
+                            }
+                            nodes.push_back({id, name, lat, lon,
+                                             (now_s - epoch) > marker_stale_secs,
+                                             false, colour});
+                        }
+
+                        std::istringstream sf(self_raw_of(raw));
+                        double slat = 0.0, slon = 0.0;
+                        int64_t sepoch = 0;
+                        if (sf >> slat >> slon >> sepoch) {
+                            nodes.push_back({"self", self_label, slat, slon,
+                                             (now_s - sepoch) > marker_stale_secs,
+                                             true, -1});
+                        }
+
+                        smap->set_mesh_nodes(std::move(nodes));
+                        win->window().request_redraw();
+                    }
+                }
+
+                // Physical mouse-wheel zoom: drain whatever the evdev reader
+                // thread accumulated since the last tick. One
+                // handle_wheel_zoom() call per net detent (fixed 1.2x step
+                // each, same as the on-screen +/- buttons); partial
+                // cancellation within a tick (scroll up then down) is
+                // intentional -- it nets out rather than double-stepping.
+                if (int clicks = wheel_clicks->exchange(0)) {
+                    auto sz = win->window().size();
+                    float cx = static_cast<float>(sz.width) / 2.0f;
+                    float cy = static_cast<float>(sz.height) / 2.0f;
+                    float dy = clicks > 0 ? -1.0f : 1.0f;  // see reader thread comment
+                    for (int i = 0; i < std::abs(clicks); ++i)
+                        smap->handle_wheel_zoom(cx, cy, dy);
+                }
+
+                // Status-bar Wi-Fi indicator (polled in thread (c2) above).
+                const int nstate = net_state->load();
+                win->set_net_state(nstate);
+                win->set_wifi_icon((*wifi_icons)[nstate]);
+                {
+                    std::lock_guard<std::mutex> lk(*net_ssid_mtx);
+                    win->set_wifi_ssid(slint::SharedString(net_ssid->c_str()));
+                }
+                win->set_kbd_connected(kbd_conn->load());
+                win->set_mic_present(mic_present->load());
+                {
+                    const int ms = mic_state->load();
+                    win->set_mic_state(ms);
+                    win->set_mic_icon((*mic_icons)[ms < 0 ? 0 : (ms > 2 ? 2 : ms)]);
+                }
+
+                if (sync_on->load() && stage == 0 && (orient_ok || gps_ok)) {
+                    double p = op < 0.0 ? 0.0 : (op > 60.0 ? 60.0 : op);
+                    bool changed = false;
+                    if (orient_ok) {
+                        double db = std::fabs(
+                            std::fmod(ob - ss->la_bearing + 540.0, 360.0) - 180.0);
+                        if (std::fabs(p - ss->la_pitch) > 0.3 || db > 0.3)
+                            changed = true;
+                    }
+                    if (gps_ok &&
+                        (std::fabs(glat - ss->la_lat) > 3e-5 ||
+                         std::fabs(glon - ss->la_lon) > 3e-5))
+                        changed = true;
+                    if (changed) {
+                        smap->set_sync(gps_ok, glat, glon, orient_ok, p, ob);
+                        win->window().request_redraw();
+                        if (orient_ok) {
+                            ss->la_pitch = static_cast<float>(p);
+                            ss->la_bearing = static_cast<float>(ob);
+                        }
+                        if (gps_ok) {
+                            ss->la_lat = glat;
+                            ss->la_lon = glon;
+                        }
+                    }
+                }
+            }
+
+            // Stage 0: keep the live-map render loop alive and restart it when a
+            // render-pause ends (BeforeRendering stops re-arming while paused,
+            // so without this the map would stay frozen after un-pause).
+            if (stage == 0 && !map_render_paused())
+                win->window().request_redraw();
+
+            if (stage != 1 && stage != 2)
+                return;
+
+            const float W = (*Wp > 0) ? static_cast<float>(*Wp) : 720.f;
+            const float H = (*Hp > 0) ? static_cast<float>(*Hp) : 480.f;
+            const float bw = (stage == 1) ? 140.f : 220.f;
+            const float bh = (stage == 1) ? 84.f : 220.f;
+            bool bounced =
+                selftest ? false
+                         : ss_bounce(ss->bx, ss->by, ss->bvx, ss->bvy, W, H, bw,
+                                     bh);
+            win->set_logo_x(ss->bx);
+            win->set_logo_y(ss->by);
+            if (stage == 1) {
+                if (bounced) {
+                    ss->ci = (ss->ci + 1) % 6;
+                    win->set_dvd_image(dvd_tinted(*dvd_mask, COLORS[ss->ci]));
+                }
+            } else if (bounced && !tiles->empty()) {
+                ss->show = (ss->show + 1) % tiles->size();
+                win->set_tile_image((*tiles)[ss->show]);
+            }
+            win->window().request_redraw();
+        });
+
+    // External fly-to IPC. Any process can steer the camera by writing
+    // "lat lon [zoom]" (zoom optional, default 11) to /dev/shm/pi-map-flyto;
+    // e.g. `echo "34.385 132.455 11" > /dev/shm/pi-map-flyto` flies to
+    // Hiroshima. pi-hear writes this file from a recognised voice command.
+    // Polled on the UI thread (200 ms), so smap->fly_to is as safe here as the
+    // on_request_fly_to toolbar callback. tmpfs (/dev/shm) => no SD wear.
+    auto flyto_timer = std::make_shared<slint::Timer>();
+    auto flyto_mtime = std::make_shared<int64_t>(-1);
+    {
+        // Ignore any pre-existing file at startup (don't fly on boot); only
+        // react to writes made after launch.
+        struct stat st {};
+        if (::stat("/dev/shm/pi-map-flyto", &st) == 0)
+            *flyto_mtime = static_cast<int64_t>(st.st_mtim.tv_sec) * 1000 +
+                           st.st_mtim.tv_nsec / 1000000;
+    }
+    flyto_timer->start(
+        slint::TimerMode::Repeated, std::chrono::milliseconds(200), [=]() {
+            struct stat st {};
+            if (::stat("/dev/shm/pi-map-flyto", &st) != 0)
+                return;
+            int64_t m = static_cast<int64_t>(st.st_mtim.tv_sec) * 1000 +
+                        st.st_mtim.tv_nsec / 1000000;
+            if (m == *flyto_mtime)
+                return;
+            *flyto_mtime = m;
+            std::ifstream f("/dev/shm/pi-map-flyto");
+            double lat = 0.0, lon = 0.0, zoom = 11.0;
+            if (f >> lat >> lon) {
+                f >> zoom;  // optional third field; keeps default if absent
+                std::cout << "[flyto] lat=" << lat << " lon=" << lon
+                          << " zoom=" << zoom << std::endl;
+                last_activity->store(now_ms());  // count as activity (wake saver)
+                smap->fly_to(lat, lon, zoom);
+            }
+        });
+
+    std::cout << "[main_gl] Entering UI event loop" << std::endl;
+    win->run();
+    return 0;
+}

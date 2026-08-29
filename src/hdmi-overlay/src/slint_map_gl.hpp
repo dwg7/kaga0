@@ -1,0 +1,195 @@
+#pragma once
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <functional>
+#include <mbgl/map/map.hpp>
+#include <mbgl/map/map_observer.hpp>
+#include <mbgl/renderer/renderer_observer.hpp>
+#include <mbgl/util/run_loop.hpp>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "slint_gl_backend.hpp"
+
+// No-op observer used during orderly shutdown.
+class NoopGLRendererObserver final : public mbgl::RendererObserver {
+public:
+    void onInvalidate() override {
+    }
+    void onDidFinishRenderingFrame(RenderMode, bool, bool) override {
+    }
+};
+
+// Renderer observer that flags a repaint when maplibre invalidates.
+class SlintGLRendererObserver final : public mbgl::RendererObserver {
+public:
+    explicit SlintGLRendererObserver(std::function<void()> notify)
+        : notify_(std::move(notify)) {
+    }
+
+    void onInvalidate() override {
+        if (notify_)
+            notify_();
+    }
+    void onDidFinishRenderingFrame(RenderMode, bool needsRepaint,
+                                   bool placementChanged) override {
+        if (needsRepaint || placementChanged)
+            onInvalidate();
+    }
+
+private:
+    std::function<void()> notify_;
+};
+
+class SlintMapGL : public mbgl::MapObserver {
+public:
+    SlintMapGL() = default;
+    ~SlintMapGL() override;
+
+    // Called from Slint's RenderingSetup (GL context current).
+    void setup(uint32_t fbo, int w, int h, const std::string& styleUrl);
+
+    // Called from Slint's BeforeRendering (GL context current).
+    void render();
+
+    bool style_is_loaded() const {
+        return style_loaded.load();
+    }
+
+    // Pointer / touch interaction (wired from the Slint UI callbacks).
+    void handle_mouse_press(float x, float y);
+    void handle_mouse_release();
+    void handle_mouse_move(float x, float y, bool pressed);
+    void handle_wheel_zoom(float x, float y, float dy);
+    void handle_double_click(float x, float y, bool shift);
+    void handle_pan(float dx, float dy);  // keyboard arrow-key pan (screen px)
+
+    // Commands from the toolbar (dropdown / buttons / sliders).
+    void setStyleUrl(const std::string& url);
+    void fly_to(double lat, double lon, double zoom);
+    // Instant (no animation) recentre; used by the screensaver tile prerender
+    // and to restore the user's view on wake.
+    void jump_to(double lat, double lon, double zoom);
+
+    // Current style URL + center/zoom, so the screensaver can save the user's
+    // view before the bouncing-tile prerender and restore it on wake.
+    std::string current_style_url() const {
+        return style_url_;
+    }
+    void get_center_zoom(double& lat, double& lon, double& zoom) const;
+    void set_zoom(double zoom);
+    void set_pitch(double pitch);
+    void set_bearing(double bearing);
+    // Apply pitch + bearing together (one camera update); used by the sensor
+    // "Sync" feed so a single jumpTo carries both.
+    void set_orientation(double pitch, double bearing);
+    // "Sync" feed: in one camera update, optionally recentre on a GPS fix
+    // (use_center) and/or apply sensor pitch+bearing (use_orient). Zoom is left
+    // untouched so the user keeps their zoom level.
+    void set_sync(bool use_center, double lat, double lon, bool use_orient,
+                  double pitch, double bearing);
+    // Toggle the "Dance" animation: when on, sweep pitch+bearing at the current
+    // location; when off, reset pitch/bearing to 0 (keeping center + zoom).
+    void set_dance(bool on);
+
+    // Meshtastic nodes to draw as markers. Fed from /dev/shm/pi-mesh-nodes
+    // (published by pi-meshtastic.service); the map owns nothing about the
+    // radio, it just plots whatever positions it is handed.
+    struct MeshNode {
+        std::string id;
+        std::string name;
+        double lat = 0.0;
+        double lon = 0.0;
+        // A position is worth showing long after it was measured -- indoors the
+        // GPS never fixes and a node may not have been heard for hours -- but it
+        // must not read as current, so stale ones are drawn faded.
+        bool stale = false;
+        bool self = false;   // this host's own position, drawn in its own colour
+        // Palette slot for a POI marker, or -1 for a radio node. Two searches
+        // can be on the map at once -- hotels and cafes -- and telling them
+        // apart is the whole reason this is here. The producer chooses the
+        // slot (see geo.colour_slot) and writes it into the id; the map only
+        // owns the colours.
+        int colour = -1;
+    };
+    void set_mesh_nodes(std::vector<MeshNode> nodes);
+
+    // MapObserver overrides
+    void onWillStartLoadingMap() override;
+    void onDidFinishLoadingStyle() override;
+    void onDidBecomeIdle() override;
+    void onDidFailLoadingMap(mbgl::MapLoadError error,
+                             const std::string& what) override;
+    void onCameraDidChange(CameraChangeMode) override;
+    void onSourceChanged(mbgl::style::Source&) override;
+    void onDidFinishRenderingFrame(const RenderFrameStatus&) override;
+
+private:
+    std::unique_ptr<mbgl::util::RunLoop> run_loop;
+    std::unique_ptr<SlintGLBackend> backend;
+    std::unique_ptr<SlintGLFrontend> frontend;
+    std::unique_ptr<SlintGLRendererObserver> observer;
+    NoopGLRendererObserver noop_observer;
+    std::unique_ptr<mbgl::Map> map;
+
+    std::atomic<bool> style_loaded{false};
+    std::atomic<bool> map_idle{false};
+    std::atomic<bool> repaint{false};
+    bool fallback_style_applied{false};
+    std::string style_url_;  // last style URL loaded (tracked for save/restore)
+
+    mbgl::Point<double> last_pos{};
+    double min_zoom_ = 0.0;
+    double max_zoom_ = 22.0;
+    // 64-bit: at 60fps an int wraps in about 14 months, and signed
+    // overflow is undefined -- this appliance is expected to just keep running.
+    uint64_t frame_count_ = 0;
+    // flyTo duration; override with MAPLIBRE_FLY_MS. Deliberately long: V3D
+    // renders the full map every frame, and a fast flyTo outruns tile loading
+    // so almost nothing draws mid-flight. 6 s lets tiles keep up and stay smooth.
+    int fly_ms_ = 6000;
+
+    // Zoom bias (MAPLIBRE_ZOOM_BIAS, default 0): added to every absolute
+    // zoom target (initial view, fly-to buttons, jump-to). At a given camera
+    // position, a higher effective zoom shows less geographic area and
+    // fewer/coarser-tier features, which is both the requested "already
+    // zoomed in" look for VBM at this display size and a straightforward fps
+    // lever (less to render per frame).
+    double zoom_bias_ = 0.0;
+
+    // Orientation perf demo: when MAPLIBRE_ORIENTATION_DEMO!=0, sweep pitch and
+    // bearing every frame (a stand-in for a future tilt/compass sensor feed) and
+    // log the effective frame rate. Off by default.
+    bool demo_orientation_ = false;
+    double dance_speed_ = 0.5;  // sweep-rate factor; MAPLIBRE_DANCE_SPEED
+    double dance_max_pitch_ = 45.0;  // peak dance pitch (deg); MAPLIBRE_DANCE_MAX_PITCH
+
+    // Mesh markers. apply_mesh_nodes() runs on the map thread (from render()),
+    // because the style must not be touched from the timer that feeds us.
+    std::vector<MeshNode> mesh_nodes_;
+    bool mesh_dirty_ = false;
+    void apply_mesh_nodes();
+    std::chrono::steady_clock::time_point demo_start_{};
+    std::chrono::steady_clock::time_point fps_last_{};
+    int fps_frames_ = 0;
+
+    // Frame-timing instrumentation (enabled by MAPLIBRE_PERF != 0). Splits each
+    // frame into run_loop (tile/result processing) vs frontend->render (V3D GPU)
+    // vs "other" (Slint UI compositing + present + vsync wait), and flags slow
+    // frames (>33ms) to localize stutter.
+    bool perf_log_ = false;
+    std::chrono::steady_clock::time_point last_frame_{};
+    double acc_frame_ms_ = 0.0, acc_rl_ms_ = 0.0, acc_rn_ms_ = 0.0;
+    double max_frame_ms_ = 0.0, max_rl_ms_ = 0.0, max_rn_ms_ = 0.0;
+    double slow_frame_ms_ = 0.0, slow_rl_ms_ = 0.0, slow_rn_ms_ = 0.0;
+    int slow_frames_ = 0;
+
+    // Manual double-tap detection (touchscreens rarely emit Slint
+    // double-clicked).
+    std::chrono::steady_clock::time_point last_tap_{};
+    float last_tap_x_ = 0.0f;
+    float last_tap_y_ = 0.0f;
+};

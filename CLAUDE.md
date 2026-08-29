@@ -234,6 +234,11 @@ VBM/VLCM PMTilesは `depot.optgeo.org` から直接取得する(`just fetch-data
 
 ## 10. 現時点でのステータス
 
+**最新の生きた状態は[HANDOVER.md](HANDOVER.md)を参照**(このセクションは
+Stage単位のマイルストーン記録として残す。日々更新されるのはHANDOVER.md側)。
+意思決定の経緯は[DECISIONS.md](DECISIONS.md)(索引)→[docs/decisions/](docs/decisions/)
+(個別ADR)、今後の作業は[docs/plan.md](docs/plan.md)。
+
 - [x] `dwg7/kaga0` リポジトリ作成
 - [x] 実機準備(Raspberry Pi 4、コードネーム決定済み — 詳細は`.env`、[0006](docs/decisions/0006-hostname-naming.md))
 - [x] SDカード書き込み・実機への疎通確認(`scripts/flash-sdcard.sh`、Trixie+cloud-init。
@@ -244,11 +249,27 @@ VBM/VLCM PMTilesは `depot.optgeo.org` から直接取得する(`just fetch-data
 - [x] Stage 3: DRM/KMS経由でSlintのHello Worldアプリが表示できる(ハードウェアGL
       〈v3d〉で動作、トラックボールのカーソル追従も確認済み。詳細・経緯は
       [docs/stage3-build-log.md](docs/stage3-build-log.md)参照)
-- [x] Stage 4: MapLibre Native単体のビルド・レンダリング成功(EGL対応版0.8.7、
-      C++にパッチ適用。詳細は[docs/stage4-5-build-log.md](docs/stage4-5-build-log.md)参照)
-- [x] Stage 5: MapLibre NativeとSlintが繋がり、地図がHDMI画面に出た。ドラッグでの
-      パン操作も動作確認済み(公開スタイルで検証。ホイールズームは上流の制約で
-      未対応、カーソル非表示など既知の課題あり)
-- [ ] Stage 6: VBM/VLCM PMTilesを実際に表示する(← v0の成功条件到達点。
-      データ取得済み〈`/opt/kaga/data/`〉、**次の作業**)
+- [x] Stage 4: MapLibre Native単体のビルド成功(初回は`rust/`実装〈EGL対応版0.8.7、
+      C++にパッチ適用〉で到達。詳細は[docs/stage4-5-build-log.md](docs/stage4-5-build-log.md)参照。
+      その後2026-08-30に**Yuisekiさんの`hdmi/`実装〈C++、zero-copy GL〉が
+      正しいレシピと判明し切り替え**——`rust/`実装はSPI〈GPU無し〉機体向けの
+      レシピをHDMI〈GPU有り〉機体に誤って適用していたと判明。詳細・謝辞は
+      [docs/decisions/0014](docs/decisions/0014-hdmi-path-zero-copy-gl.md)参照)
+- [x] Stage 5: MapLibre NativeとSlintが繋がり、地図がHDMI画面に出た。
+      `hdmi/`(zero-copy GL、ハードウェアGL/V3D)でドラッグ=パン・ダブル
+      クリック=ズームイン・マウスカーソル表示、すべて動作確認済み
+      (CPU使用率25%、29-38fps。旧`rust/`+ソフトウェアレンダリング版の
+      140%前後から劇的に改善。詳細は[docs/decisions/0014](docs/decisions/0014-hdmi-path-zero-copy-gl.md)参照)。
+      **マウスホイールでの拡大縮小も独自実装で達成**(Slint上流の`linuxkms`
+      バックエンドは`Axis`/wheelイベントを処理しないため、生evdev読み取り
+      スレッドを追加。v0成功条件「ホイール=拡大縮小」を当初の「上流の制約で
+      未対応」という結論から覆した。詳細は[docs/plan.md](docs/plan.md)参照)
+- [x] Stage 6: VBM/VLCM PMTilesを実際に表示(← v0の成功条件到達点、
+      藤村さん実機確認済み「いけてるね」)。背景地図として国土地理院
+      (GSI)の`bvmap`を`pmtiles extract`でオフライン化して追加
+      (北海道bboxのみ300MB、詳細は[docs/decisions/0014](docs/decisions/0014-hdmi-path-zero-copy-gl.md)参照)。
+      フォント/スプライトはGitHub Pages依存のまま(kitavolca由来、既知の
+      残課題、v0成功条件には非該当)
 - [ ] Stage 7: systemdで自動起動、電源投入だけで地図が立ち上がる
+      (`getty@tty1`とのDRM master競合の恒久対応が必要。現状は手動で
+      `systemctl stop getty@tty1`してから起動している)
