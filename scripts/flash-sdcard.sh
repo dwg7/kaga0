@@ -166,8 +166,14 @@ users:
 # Raspberry Pi OSはSSHサーバーを既定で無効化していることがあり、
 # users.ssh_authorized_keys の指定だけではサービスが起動しなかった
 # (実機で確認: ping通/ssh connection refused)。runcmdで明示的に有効化・起動する。
+# Wi-Fiの国コード未設定は、rfkillでwlanがソフトブロックされたままになり
+# 一切スキャン/接続できなくなる(実機で確認: /var/lib/systemd/rfkill/...wlan: 1)。
+# raspi-configでの設定はこれで確実にブロック解除できることを実機で確認済み
+# (network-config側のregulatory-domain指定だけで解除されるかは未検証・不明のため、
+# こちらの確実な経路と併用する)。
 runcmd:
   - systemctl enable --now ssh
+  - raspi-config nonint do_wifi_country JP
 """
 with open(out_path, "w") as f:
     f.write(doc)
@@ -196,8 +202,19 @@ timezone = "Asia/Tokyo"
 EOF
 fi
 
-sync
-diskutil eject "${DEVICE}" >/dev/null 2>&1 || true
+if [ -n "${WIFI_SSID:-}" ] && [ -n "${WIFI_PASSWORD:-}" ]; then
+    # .envにWi-Fi情報があれば続けて書き込む(configure-wifi.sh呼び忘れ対策。
+    # 実機で「flash-sdcardだけ実行してconfigure-wifiを忘れる」事故が実際に発生した)。
+    # まだマウント・接続済みのこのセッション内で行うことで、eject→再挿入の
+    # 不安定な往復も避けられる(configure-wifi.sh側が最終的なejectまで行う)。
+    echo "=== Wi-Fi設定(.envにWIFI_SSID/WIFI_PASSWORDあり)を続けて書き込み ==="
+    "${KAGA_ROOT}/scripts/configure-wifi.sh" "${DEVICE}"
+else
+    echo "ℹ Wi-Fi未設定(.envにWIFI_SSID/WIFI_PASSWORDが無いためスキップ)。"
+    echo "  有線接続を使うか、後で 'just configure-wifi ${DEVICE}' を実行してください"
+    sync
+    diskutil eject "${DEVICE}" >/dev/null 2>&1 || true
+fi
 
 echo "✓ 完了。SDカードを取り出してRPiに挿入し、電源投入後:"
 echo "   ssh ${RPI_USER}@${HOSTNAME}.local"
