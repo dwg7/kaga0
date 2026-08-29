@@ -198,7 +198,9 @@ SSH経由で取得できる診断コマンド一式を早期に用意する。�
 1. `cp .env.example .env` して `KAGA_HOST`・`SSH_PUBKEY_FILE` 等の実値を設定
    (ホスト名の決め方は[0006](docs/decisions/0006-hostname-naming.md)、実値を`.env`に置く理由は
    [0007](docs/decisions/0007-secrets-policy.md)参照)
-2. OS: **Raspberry Pi OS Lite (64-bit)**(GUIデスクトップ不要、軽量、Browserless構成に合う)
+2. OS: **Raspberry Pi OS (Legacy, 64-bit) Lite**(Bookworm。GUIデスクトップ不要、軽量、
+   Browserless構成に合う。最新のTrixieベース版ではなくLegacyを使う理由は
+   [0008](docs/decisions/0008-legacy-bookworm-image.md)参照)
 3. ホスト名・ユーザー・SSH公開鍵は `custom.toml`(Bookworm系の起動時カスタマイズ機構)経由で設定。
    **公開鍵認証のみ有効化し、パスワード認証は無効化する**(デフォルトの`pi`ユーザーは存在しないため
    ユーザー作成が必須)
