@@ -61,7 +61,13 @@ run_local() {
 }
 
 if [ "${1:-}" = "--ssh" ]; then
-    target="${2:?使い方: diagnose.sh --ssh <user>@host}"
+    KAGA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    [ -f "${KAGA_ROOT}/.env" ] && source "${KAGA_ROOT}/.env"
+    target="${2:-}"
+    if [ -z "${target}" ] && [ -n "${KAGA_USER:-}" ] && [ -n "${KAGA_HOST:-}" ]; then
+        target="${KAGA_USER}@${KAGA_HOST}"
+    fi
+    : "${target:?使い方: diagnose.sh --ssh <user>@host (または.envにKAGA_USER/KAGA_HOSTを設定)}"
     ssh "${target}" "$(declare -f run_local); run_local"
 else
     run_local

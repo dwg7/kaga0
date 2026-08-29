@@ -1,0 +1,19 @@
+# 環境固有の実値(実機のホスト名/ユーザー名/鍵ファイルパス等)。
+# .env.example をコピーして使う。詳細は docs/decisions/0007-secrets-policy.md
+.env
+
+# SDカード初回起動カスタマイズ(平文パスワードを含みうる)。flash-sdcard.shが
+# 生成する一時ファイルで、SDカードのbootパーティションに直接書き込むためリポジトリには不要。
+custom.toml
+
+# 秘密鍵・証明書の誤コミット防止(秘密鍵は本来 ~/.ssh 以下にのみ置く)
+id_ed25519*
+!id_ed25519*.example
+*.pem
+*.key
+
+# OSイメージ(容量大)
+*.img
+*.img.xz
+
+.DS_Store

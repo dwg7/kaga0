@@ -13,3 +13,13 @@ See [CLAUDE.md](CLAUDE.md) for full project context. Source: [UNopenGIS/7#987](h
 3. 北海道の主要火山を表示できる (displays major Hokkaido volcanoes)
 4. パン・ズームが快適である (pan/zoom feels responsive)
 5. 会議や打合せで実利用できる (usable in real meetings/briefings)
+
+## Quick start
+
+```bash
+cp .env.example .env   # fill in your device's hostname/user/SSH key — see docs/decisions/0006, 0007
+just setup             # check required tools
+just --list            # see available tasks (flash-sdcard, fetch-data, deploy, diagnose, ssh)
+```
+
+See [docs/hardware-setup.md](docs/hardware-setup.md) for the full physical setup walkthrough.

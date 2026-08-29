@@ -1,6 +1,6 @@
 # 4. data取得は本番タイルサーバーではなくkitavolcaパイプラインをローカル実行して行う
 
-- ステータス: 承認
+- ステータス: 置き換え済み — [0005](0005-depot-optgeo-org.md) に置き換え
 - 日付: 2026-08-29
 
 ## 状況
@@ -26,3 +26,9 @@ kitavolcaの本番配信先である `stars.optgeo.org` は `/vbm`, `/vlcm` をT
   (kitavolca側の前提条件がそのままkaga側にも波及する)
 - stars.optgeo.orgに生pmtilesの静的配信エンドポイントが将来追加された場合は、
   本ADRを見直しシンプルなHTTP GETに置き換える
+
+## 追記(2026-08-29)
+
+生pmtilesを直接HTTP GETできる `depot.optgeo.org` が用意されたため、
+このADRで採用した「kitavolcaをローカルでbuildする」方式は不要になった。
+[0005](0005-depot-optgeo-org.md) を参照。
