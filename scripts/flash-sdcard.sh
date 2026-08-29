@@ -103,10 +103,11 @@ read -r -s -p "RPi用パスワード(公開鍵authが有効なため通常使わ
 echo
 
 echo "=== OSイメージ書き込み: ${OS_IMAGE} → ${DEVICE} ==="
-rpi-imager --cli "${OS_URL}" "${DEVICE}" --sha256 "${OS_SHA256}"
+# --disable-eject: 既定では書き込み+検証成功後にrpi-imagerがSDカードリーダーごと
+# デバイスを切断してしまう(macOS実機で確認: 直後にdiskutil listから完全に消え、
+# 元の/dev/diskNは存在しなくなる)。user-data書き込みのため接続を維持させる。
+rpi-imager --cli "${OS_URL}" "${DEVICE}" --sha256 "${OS_SHA256}" --disable-eject
 
-# rpi-imagerが書き込み後にbootパーティションを自動マウントしないことがある
-# (macOS 26実機で確認: diskutil mountDiskを叩かない限りマウントされなかった)。
 BOOT_MOUNT="/Volumes/bootfs"
 diskutil mountDisk "${DEVICE}" >/dev/null 2>&1 || true
 for _ in 1 2 3 4 5; do
@@ -115,7 +116,8 @@ for _ in 1 2 3 4 5; do
 done
 if [ ! -d "${BOOT_MOUNT}" ]; then
     echo "❌ ${BOOT_MOUNT} が見つかりません。" >&2
-    echo "   'diskutil mountDisk ${DEVICE}' を試すか、SDカードを一度抜き差ししてから再実行してください" >&2
+    echo "   'diskutil list' で ${DEVICE} がまだ存在するか確認してください。" >&2
+    echo "   存在しない場合はSDカードを一度抜き差ししてから再実行してください" >&2
     exit 1
 fi
 
