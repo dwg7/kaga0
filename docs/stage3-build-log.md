@@ -71,6 +71,36 @@ git submodule update --init --recursive   # ← compact時点でまだ実行中(
 6. 恒久的なビルド手順が固まったら、この場当たり的な手順を
    `scripts/setup-build-env.sh`のようなスクリプトに落とし込む
 
+## クロスコンパイル要否の調査(2026-08-29)
+
+PR #66(`rust/RASPBERRY_PI.md`追加、著者: yuiseki, 2026-06-19マージ)を確認した結果:
+
+- **ビルドホスト**: Raspberry Pi 5 (Debian 12/bookworm)、**表示ホスト**: Raspberry Pi 4
+  (Debian 13/trixie)という2台構成で検証されている。SPI/HDMI液晶(480×320)で
+  PMTiles(`osm-fiord`スタイル、planet.pmtiles)の表示まで確認済み
+- これは異アーキテクチャ間の「クロスコンパイル」ではなく、**同じaarch64・異なるDebian
+  バージョン間でのバイナリ移動**。ICU/libpng16/libuvなどのバージョン差異が出るため、
+  ビルドホスト側の該当ライブラリを`LD_LIBRARY_PATH`でバンドルする回避策が必要
+  (ただしGPU/表示スタック — libEGL/libGL/Mesa/libdrm/libgbm — は禁止、必ず
+  ターゲット側のものを使う)
+- **m329は自身がTrixieなので、この問題は発生しない**。ビルド・実行とも同一機体・
+  同一OSで完結でき、Yuisekiさんの検証環境より単純。クロスコンパイルは不要と判断し、
+  m329上でのネイティブビルドを継続する
+- 代替案(将来ビルドが遅すぎる場合): もう1台aarch64/Trixie機をビルド専用に用意する
+  (異バージョン間バンドル問題は起きないが、ビルド時間短縮が目的になる)。現時点では
+  不要と判断
+
+## ETA見積もり(2026-08-29 13:52時点)
+
+- サブモジュールclone開始13:28、24分経過時点で`vendor/maplibre-native`
+  (GitHub上サイズ約4.7GB)が2.6GB取得済み(約56%、Wi-Fi経由 約1.8MB/s)
+- clone完了まで残り30〜60分と推定(本体の残り+ネストした39個のサブモジュール)
+- その後の`cargo build --release --features linuxkms-noseat`が本命。
+  maplibre-nativeは大規模C++コードベースで、m329(4コアCortex-A72、RAM 3.7GB)では
+  2〜5時間程度を見込む。`-j4`でのOOMリスクは既知([上記](#m329のハードウェア2026-08-29確認)参照)、
+  発生時は`-j2`/`-j1`への切り替えでさらに延びる可能性
+- **合計ETA: 現時点から初回起動確認まで体感3〜6時間**
+
 ## 未解決・保留中の論点
 
 - **ログインユーザー名 `hfu` vs `niroku`**: `~/.ssh/config`に元々
