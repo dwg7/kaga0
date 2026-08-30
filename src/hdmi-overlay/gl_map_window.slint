@@ -370,9 +370,9 @@ export component MapWindow inherits Window {
                 // premise. The Wi-Fi icon above still conveys connection state
                 // (grey/yellow/green) without naming the network.
                 Text {                      // dev-only: "<w>x<h> <fps>fps <cpu>%cpu <temp>°C"
-                    x: parent.width - 480px;
+                    x: parent.width - 564px;
                     y: 0px;
-                    width: 216px;
+                    width: 300px;
                     height: 100%;
                     visible: root.debug-visible;
                     text: root.debug-text;
@@ -554,7 +554,13 @@ export component MapWindow inherits Window {
                 x: 0px;
                 y: parent.height - self.height;
                 width: 100%;
-                height: 26px;
+                // Matches the toolbar ComboBoxes' own rendered height
+                // (fluent's `min-height: max(32px, layout.min-height)`,
+                // internal/compiler/widgets/fluent/combobox.slint) so the
+                // font size and the vertical margin around it read as the
+                // same control language as the volcano dropdown, not a
+                // separate cramped debug-panel style (藤村さん, 2026-08-30).
+                height: 32px;
                 visible: root.feature-info-text != "";
                 background: #000000c0;
                 // The polygon's own fill color from the map, so the label
