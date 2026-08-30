@@ -9,7 +9,7 @@ ADRのような確定記録ではなく、随時更新する作業用リスト�
 
 | 項目 | 難易度 | 状態 | 備考 |
 |---|---|---|---|
-| systemd自動起動(`just autoexec`) | 中 | ✅完了 | `kaga-httpd.service`+`kaga-map.service`、`Conflicts=getty@tty1.service`で排他制御 |
+| systemd自動起動(`just autoexec`) | 中 | ✅完了(実機の物理電源サイクルで確認済み) | `kaga-httpd.service`+`kaga-map.service`、`Conflicts=getty@tty1.service`で排他制御。シャットダウンボタン→物理電源サイクル→自動起動、を実地確認(2026-08-30) |
 | VBM/VLCM表示 | - | ✅完了 | Stage 6 |
 | bvmap背景地図のオフライン化 | 中 | ✅完了 | GSI `optimal_bvmap-v1`を`pmtiles extract`で北海道分のみ抽出 |
 | bvmap抽出範囲の拡張(稚内・択捉島・渡島大島・龍飛岬を含む) | 小 | ✅完了 | bbox `139.2,41.1,149.5,45.7`(最終)。z16、2.5GB。実機反映・fps 25前後で安定確認済み |
