@@ -60,6 +60,15 @@ deploy:
 autoexec mode:
     ./scripts/toggle-autoexec.sh {{mode}}
 
+# set-resolution: HDMI出力解像度の切り替え(反映には再起動が必要)
+#   just set-resolution auto     EDID自動認識に戻す(初見の会場向け・推奨)
+#   just set-resolution 1080p    1920x1080に固定
+#   just set-resolution 1440p    2560x1440に固定(開発機での常用値)
+#   just set-resolution 4k       3840x2160に固定
+#   just set-resolution auto --reboot   設定後すぐ再起動して反映
+set-resolution mode reboot="":
+    ./scripts/set-resolution.sh {{mode}} {{reboot}}
+
 # diagnose: 実機の状態診断(ssh経由)
 diagnose:
     ./scripts/diagnose.sh --ssh
