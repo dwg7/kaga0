@@ -14,6 +14,7 @@ FetchContent/vendorディレクトリに直接手で当てている——`hdmi/s
 | `slint-fluent-combobox/combobox.slint` | `~/poc/mln-slint-cpp/build/_deps/slint-src/internal/compiler/widgets/fluent/combobox.slint` | `visible-items: min(6, model.length)` → `model.length`。fluentスタイルのComboBoxは6件を超えると内部スクロールになる仕様で、火山9座のドロップダウンでスクロールが必要になり操作しづらかった(藤村さん指摘、2026-08-30)。上限を撤廃し全件を一度に表示 |
 | `maplibre-native-slint-base/m-map-view.slint` | `~/poc/mln-slint-cpp/src/m-map-view.slint` | `TouchArea.pointer-event`のmoveハンドラに`!self.pressed`分岐を追加し、`MMapAdapter.mouse-hovered(x, y)`を新規発火。押下無しのホバー移動はSlintコア側では元々配送されている(`PointerEventKind.move`)が、この上流ファイルが`&& self.pressed`で握りつぶしていたため、ドラッグ用の`mouse-moved`とは別に転送する分岐を追加 |
 | `maplibre-native-slint-base/m-map-adapter.slint` | `~/poc/mln-slint-cpp/src/m-map-adapter.slint` | 上記`mouse-hovered`コールバックの宣言を追加(globalの一部) |
+| `slint-linuxkms-backend/input.rs` | `~/poc/mln-slint-cpp/build/_deps/slint-src/internal/backends/linuxkms/calloop_backend/input.rs` | 相対マウス移動(`PointerEvent::Motion`)の`dx`/`dy`を、解像度に応じたスケール(`screen_size.height / 1080.0`)で掛けてから累積するよう変更。上流は解像度に関係なく1:1でロジカルピクセルに変換しており、4K(2160px)では同じ物理的なマウス移動が1080pの半分の距離しか動かず「カーソルが遅い」体感になっていた(藤村さん指摘、2026-08-30)。1080pを基準速度とし、1440pで約1.33倍・4Kで2倍に自動スケール |
 
 **このディレクトリはビルドの一部として自動適用されない**。実機再構築時は
 手動で上記の対応先へコピーする(下記コマンド参照)。`hdmi/scripts/build.sh`
@@ -28,17 +29,20 @@ scp src/vendor-patches/slint-fluent-combobox/combobox.slint \
     "$KAGA_USER@$KAGA_HOST:/tmp/combobox.slint"
 scp src/vendor-patches/maplibre-native-slint-base/m-map-view.slint \
     src/vendor-patches/maplibre-native-slint-base/m-map-adapter.slint \
+    src/vendor-patches/slint-linuxkms-backend/input.rs \
     "$KAGA_USER@$KAGA_HOST:/tmp/"
 ssh "$KAGA_USER@$KAGA_HOST" '
   cp /tmp/combobox.slint ~/poc/mln-slint-cpp/build/_deps/slint-src/internal/compiler/widgets/fluent/combobox.slint
   cp /tmp/m-map-view.slint ~/poc/mln-slint-cpp/src/m-map-view.slint
   cp /tmp/m-map-adapter.slint ~/poc/mln-slint-cpp/src/m-map-adapter.slint
+  cp /tmp/input.rs ~/poc/mln-slint-cpp/build/_deps/slint-src/internal/backends/linuxkms/calloop_backend/input.rs
 '
 ```
 
 その後は通常通り`hdmi/scripts/build.sh`(または`cmake --build`)でビルドする。
-`combobox.slint`の変更はSlintコンパイラ自体(`i-slint-compiler`/`slint-cpp`
-crate)の再ビルドを要するため、他の変更より時間がかかる(実測4〜9分/クレート)。
+`combobox.slint`・`input.rs`の変更はSlintのRust crate自体
+(`i-slint-compiler`/`i-slint-backend-linuxkms`/`slint-cpp`)の再ビルドを
+要するため、他の変更(C++側のみ)より時間がかかる(実測4〜9分/crate)。
 
 ## 注意: `~/poc/mln-slint-cpp/build`が存在しない/作り直す場合
 
