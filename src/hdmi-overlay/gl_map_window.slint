@@ -306,44 +306,58 @@ export component MapWindow inherits Window {
                 }
             }
 
-            // Scale bar: below the toolbar, left-aligned with it. A ruler-style
-            // bar (end ticks + a line) with the ground distance above it, sized
-            // and labelled from the current zoom/latitude (main_gl.cpp).
+            // Scale bar: below the toolbar, left-aligned with it. Styled as
+            // a cartographic "bracket" (baseline + two upward end-ticks
+            // sized exactly to the measured distance, label the same width
+            // directly above it) rather than a padded UI chip -- matches
+            // the convention every desktop/web map's scale control uses
+            // (Leaflet, MapLibre GL JS, Google Maps), refined 2026-08-30
+            // after the first pass read as an unstyled button (藤村さん:
+            // 「配置配色が洗練されていない」). Only the label gets a slim
+            // dark backing for legibility over the map; the bracket itself
+            // is bare white lines the way a ruler overlay would be.
             if root.scale-bar-text != "" : Rectangle {
                 x: 22px;
                 y: 108px;
-                width: root.scale-bar-width-px + 16px;
-                height: 34px;
-                background: #000000c0;
-                border-radius: 3px;
-                Text {
+                width: root.scale-bar-width-px;
+                height: 26px;
+                background: transparent;
+                Rectangle {
                     x: 0px;
-                    y: 4px;
-                    width: parent.width;
-                    text: root.scale-bar-text;
-                    color: white;
-                    font-size: 13px;
-                    horizontal-alignment: center;
+                    y: 0px;
+                    width: 100%;
+                    height: 15px;
+                    background: #00000090;
+                    border-radius: 2px;
+                    Text {
+                        width: 100%;
+                        height: 100%;
+                        text: root.scale-bar-text;
+                        color: white;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
-                Rectangle {                                    // bar
-                    x: 8px;
-                    y: parent.height - 10px;
-                    width: root.scale-bar-width-px;
-                    height: 2px;
+                Rectangle {                                    // baseline
+                    x: 0px;
+                    y: 23px;
+                    width: 100%;
+                    height: 1px;
                     background: white;
                 }
                 Rectangle {                                    // left end-tick
-                    x: 8px;
-                    y: parent.height - 14px;
-                    width: 2px;
-                    height: 8px;
+                    x: 0px;
+                    y: 18px;
+                    width: 1px;
+                    height: 6px;
                     background: white;
                 }
                 Rectangle {                                    // right end-tick
-                    x: 8px + root.scale-bar-width-px - 2px;
-                    y: parent.height - 14px;
-                    width: 2px;
-                    height: 8px;
+                    x: parent.width - 1px;
+                    y: 18px;
+                    width: 1px;
+                    height: 6px;
                     background: white;
                 }
             }
