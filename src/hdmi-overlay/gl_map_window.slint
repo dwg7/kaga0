@@ -377,7 +377,12 @@ export component MapWindow inherits Window {
                     visible: root.debug-visible;
                     text: root.debug-text;
                     overflow: elide;
-                    color: #ffd24d;
+                    // Grey, not yellow: this is technical/diagnostic info
+                    // (fps/resolution/CPU/temp), not something a meeting
+                    // audience needs to notice -- unlike the feature-info
+                    // bar's yellow, which is meant to be read (藤村さん,
+                    // 2026-08-30).
+                    color: #888888;
                     font-size: 14px;
                     horizontal-alignment: right;
                     vertical-alignment: center;
