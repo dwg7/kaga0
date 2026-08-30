@@ -1591,6 +1591,46 @@ int main(int /*argc*/, char** /*argv*/) {
                         smap->handle_wheel_zoom(*hover_x, *hover_y, dy);
                 }
 
+                // Scale bar: ground distance per on-screen pixel follows the
+                // standard Web Mercator formula (the same one Leaflet/OSM/
+                // MapLibre GL JS use), evaluated at the camera's current
+                // zoom and latitude -- both change with pan/fly-to/wheel, so
+                // this recomputes every tick rather than once at setup.
+                // get_center_zoom() reads mbgl's actual camera state, which
+                // already has MAPLIBRE_ZOOM_BIAS baked in, so the bar always
+                // matches what's really on screen.
+                {
+                    double lat, lon, zoom;
+                    smap->get_center_zoom(lat, lon, zoom);
+                    const double meters_per_pixel =
+                        156543.03392 * std::cos(lat * M_PI / 180.0) /
+                        std::pow(2.0, zoom);
+                    // Round DOWN to a "nice" 1/2/5-decade value so the bar
+                    // reads as a tidy distance (matching every other map's
+                    // scale bar convention), capped at ~150px wide.
+                    static const double kNiceMeters[] = {
+                        1,     2,     5,     10,     20,     50,     100,
+                        200,   500,   1000,  2000,   5000,   10000,  20000,
+                        50000, 1e5,   2e5,   5e5,    1e6,    2e6,    5e6};
+                    constexpr double kMaxBarPx = 150.0;
+                    double best_m = kNiceMeters[0];
+                    double best_px = best_m / meters_per_pixel;
+                    for (double m : kNiceMeters) {
+                        const double px = m / meters_per_pixel;
+                        if (px > kMaxBarPx)
+                            break;
+                        best_m = m;
+                        best_px = px;
+                    }
+                    char buf[16];
+                    if (best_m >= 1000.0)
+                        std::snprintf(buf, sizeof(buf), "%g km", best_m / 1000.0);
+                    else
+                        std::snprintf(buf, sizeof(buf), "%g m", best_m);
+                    win->set_scale_bar_text(slint::SharedString(buf));
+                    win->set_scale_bar_width_px(static_cast<float>(best_px));
+                }
+
                 // Dev-only status-bar readout: "<w>x<h> <fps>fps <cpu>%cpu
                 // <temp>°C". Gated by MAPLIBRE_DEBUG_INFO (debug_info_on,
                 // read once at startup below) -- off by default for the

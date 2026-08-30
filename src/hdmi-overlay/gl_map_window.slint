@@ -109,6 +109,16 @@ export component MapWindow inherits Window {
     in property <string> debug-text: "";
     in property <bool> debug-visible: false;
 
+    // Scale bar: "<value> m"/"<value> km" label plus a bar this many pixels
+    // wide, recomputed as the camera moves (main_gl.cpp's saver_timer, from
+    // SlintMapGL::get_center_zoom -- the actual rendering zoom/latitude, so
+    // it stays correct across pan/zoom/fly-to and MAPLIBRE_ZOOM_BIAS).
+    // People who care about ground distance on a printed/presented map
+    // asked for this (藤村さん, 2026-08-30); empty text hides the whole
+    // element (camera not yet initialised).
+    in property <string> scale-bar-text: "";
+    in property <length> scale-bar-width-px: 0px;
+
     // VBM/VLCM feature-attribute readout under the cursor (hover, no press).
     // Empty string hides the panel; see main_gl.cpp's saver_timer for how
     // this gets populated (throttled queryRenderedFeatures via
@@ -293,6 +303,48 @@ export component MapWindow inherits Window {
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
+                }
+            }
+
+            // Scale bar: below the toolbar, left-aligned with it. A ruler-style
+            // bar (end ticks + a line) with the ground distance above it, sized
+            // and labelled from the current zoom/latitude (main_gl.cpp).
+            if root.scale-bar-text != "" : Rectangle {
+                x: 22px;
+                y: 108px;
+                width: root.scale-bar-width-px + 16px;
+                height: 34px;
+                background: #000000c0;
+                border-radius: 3px;
+                Text {
+                    x: 0px;
+                    y: 4px;
+                    width: parent.width;
+                    text: root.scale-bar-text;
+                    color: white;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                }
+                Rectangle {                                    // bar
+                    x: 8px;
+                    y: parent.height - 10px;
+                    width: root.scale-bar-width-px;
+                    height: 2px;
+                    background: white;
+                }
+                Rectangle {                                    // left end-tick
+                    x: 8px;
+                    y: parent.height - 14px;
+                    width: 2px;
+                    height: 8px;
+                    background: white;
+                }
+                Rectangle {                                    // right end-tick
+                    x: 8px + root.scale-bar-width-px - 2px;
+                    y: parent.height - 14px;
+                    width: 2px;
+                    height: 8px;
+                    background: white;
                 }
             }
 
