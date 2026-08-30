@@ -306,19 +306,26 @@ export component MapWindow inherits Window {
                 }
             }
 
-            // Scale bar: below the toolbar, left-aligned with it. Styled as
-            // a cartographic "bracket" (baseline + two upward end-ticks
-            // sized exactly to the measured distance, label the same width
-            // directly above it) rather than a padded UI chip -- matches
-            // the convention every desktop/web map's scale control uses
-            // (Leaflet, MapLibre GL JS, Google Maps), refined 2026-08-30
-            // after the first pass read as an unstyled button (藤村さん:
-            // 「配置配色が洗練されていない」). Only the label gets a slim
-            // dark backing for legibility over the map; the bracket itself
-            // is bare white lines the way a ruler overlay would be.
+            // Scale bar: bottom-left, docked directly above the
+            // feature-attribute bar when it's showing (moved here from
+            // top-left/below-the-toolbar, 藤村さん 2026-08-30: "属性が出る
+            // ところのすぐ上に置いてほしい"). The attribute bar toggles
+            // visibility on hover, so this can't just sit at a fixed
+            // offset from the bottom -- y drops the attribute bar's own
+            // height (26px) only while feature-info-text is non-empty,
+            // landing flush against the screen bottom the rest of the
+            // time. Styled as a cartographic "bracket" (baseline + two
+            // upward end-ticks sized exactly to the measured distance,
+            // label the same width directly above it) rather than a
+            // padded UI chip -- matches the convention every desktop/web
+            // map's scale control uses (Leaflet, MapLibre GL JS, Google
+            // Maps). Only the label gets a slim dark backing for
+            // legibility over the map; the bracket itself is bare white
+            // lines the way a ruler overlay would be.
             if root.scale-bar-text != "" : Rectangle {
                 x: 22px;
-                y: 108px;
+                y: parent.height - self.height
+                    - (root.feature-info-text != "" ? 26px : 0px);
                 width: root.scale-bar-width-px;
                 height: 26px;
                 background: transparent;
