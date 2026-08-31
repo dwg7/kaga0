@@ -71,6 +71,17 @@ export component MapWindow inherits Window {
         "アトサヌプリ", "雌阿寒岳", "大雪山(旭岳)", "十勝岳", "樽前山",
         "倶多楽", "有珠山", "北海道駒ケ岳", "恵山",
     ];
+    // Which volcano the ComboBox shows as selected. `<=>`-aliased to the
+    // ComboBox's own `current-index` below so it stays a true two-way
+    // binding: manual selection keeps working exactly as before, and
+    // patrol mode (main_gl.cpp) can also drive it so the dropdown shows
+    // whichever volcano it just flew to (dwg7/kaga0#1).
+    in-out property <int> volcano-current-index: 4;
+
+    // "巡回" (patrol) mode toggle (dwg7/kaga0#1): while on, main_gl.cpp
+    // auto-cycles the volcanoes on a timer for unattended demo/benchmark
+    // use, the same fly-to the ComboBox's own `selected` handler calls.
+    in-out property <bool> patrol-on: false;
 
     // "Dance" toggle: drives the pitch/bearing animation in the C++ backend.
     in-out property <bool> dancing: false;
@@ -81,9 +92,6 @@ export component MapWindow inherits Window {
     // is disabled (greyed) when no fresh sensor data is present.
     in property <bool> sensor-available: false;
     callback sync-toggled(bool);
-
-    // Wall clock, "HH:MM", pushed from C++ (empty = hidden).
-    in property <string> clock-text: "";
 
     // Battery (PiSugar): percent + charging state for a small corner readout.
     in property <int> battery-percent: -1;     // -1 = unknown / hidden
@@ -257,14 +265,16 @@ export component MapWindow inherits Window {
                 ComboBox {
                     horizontal-stretch: 2;
                     model: root.volcano-names;
-                    // Index 4 = 樽前山, matching MAPLIBRE_CENTER's default
-                    // initial view (near Tomakomai/Shikotsu-ko -- vbm.pmtiles'
-                    // own embedded centre point). Purely cosmetic (nothing
-                    // re-syncs this if the view changes some other way, e.g.
-                    // drag/wheel/screensaver-restore), but showing an
-                    // unrelated volcano here while a different one is
-                    // actually on screen read as a bug at first glance.
-                    current-index: 4;
+                    // Default index 4 = 樽前山, matching MAPLIBRE_CENTER's
+                    // default initial view (near Tomakomai/Shikotsu-ko --
+                    // vbm.pmtiles' own embedded centre point). `<=>`-aliased
+                    // to root.volcano-current-index (not a plain literal
+                    // default any more) so patrol mode can also drive which
+                    // entry shows as selected -- showing an unrelated
+                    // volcano here while a different one is actually on
+                    // screen would read as a bug at a glance, doubly so
+                    // during an unattended demo (dwg7/kaga0#1).
+                    current-index <=> root.volcano-current-index;
                     // A fly-to shortcut list, not persistent view state --
                     // unlike the style ComboBox, picking the same entry
                     // twice should still fly there again, and there is no
@@ -272,6 +282,36 @@ export component MapWindow inherits Window {
                     selected => {
                         map.fly-to(root.volcanoes[self.current-index].lat,
                                    root.volcanoes[self.current-index].lon, 12);
+                    }
+                }
+                // "巡回" (patrol) mode toggle (dwg7/kaga0#1): for demos/
+                // events, cycles through the volcano list unattended so
+                // kaga's performance stays visible without anyone touching
+                // it. A persistent on/off toggle (not a momentary button,
+                // unlike shutdown) -- clicking flips patrol-on, and the
+                // colour reflects the current state so it reads correctly
+                // at a glance even mid-demo. Placed immediately left of
+                // shutdown per the issue's UI spec. Same
+                // Rectangle+TouchArea construction as shutdown (fluent's
+                // Button still has no colour-override property).
+                Rectangle {
+                    horizontal-stretch: 0;
+                    min-width: 96px;
+                    height: 100%;
+                    background: root.patrol-on
+                        ? (patrol-touch.pressed ? #1f6f3f : #2a9d5f)
+                        : (patrol-touch.pressed ? #3a3a3a : #4a4a4a);
+                    border-radius: 3px;
+                    animate background { duration: 100ms; }
+                    patrol-touch := TouchArea {
+                        clicked => { root.patrol-on = !root.patrol-on; }
+                    }
+                    Text {
+                        text: root.patrol-on ? "巡回中" : "巡回";
+                        color: white;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
                     }
                 }
                 // Shutdown button (2026-08-30, 藤村さん指示): kaga is meant to
@@ -481,18 +521,10 @@ export component MapWindow inherits Window {
                     horizontal-alignment: left;
                     vertical-alignment: center;
                 }
-                Text {                      // clock, hard against the right edge
-                    x: parent.width - 52px;
-                    y: 0px;
-                    width: 44px;
-                    height: 100%;
-                    visible: root.clock-text != "";
-                    text: root.clock-text;
-                    color: white;
-                    font-size: 14px;
-                    horizontal-alignment: right;
-                    vertical-alignment: center;
-                }
+                // Wall clock removed (2026-08-31, dwg7/kaga0#2): the RPi has
+                // no RTC battery, so in fully offline operation (no NTP) the
+                // clock free-runs from whatever time it had at last shutdown
+                // -- showing a wrong time is worse than showing none.
             }
 
             // Right-edge vertical zoom strip. Kept mostly for keyboard/

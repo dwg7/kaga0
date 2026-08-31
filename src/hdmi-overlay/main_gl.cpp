@@ -253,6 +253,29 @@ static std::string wave_commands(float level, double t) {
     return out;
 }
 
+// Mirrors gl_map_window.slint's `volcanoes` array (same order/values) --
+// patrol mode (dwg7/kaga0#1) needs lat/lon in C++ and Slint has no
+// array-map expression to derive one list from the other, so this is a
+// third parallel copy of the same 9 entries (matching the .slint file's
+// own existing volcanoes/volcano-names duplication). Keep in sync if the
+// volcano list ever changes.
+struct PatrolVolcano {
+    double lat, lon;
+};
+static const PatrolVolcano kPatrolVolcanoes[] = {
+    {43.6103, 144.4386},  // アトサヌプリ
+    {43.3863, 144.0088},  // 雌阿寒岳
+    {43.6636, 142.8541},  // 大雪山(旭岳)
+    {43.4178, 142.6863},  // 十勝岳
+    {42.6906, 141.3767},  // 樽前山
+    {42.5000, 141.1833},  // 倶多楽
+    {42.5439, 140.8392},  // 有珠山
+    {42.0634, 140.6772},  // 北海道駒ケ岳
+    {41.8047, 141.1661},  // 恵山
+};
+constexpr int kPatrolVolcanoCount =
+    sizeof(kPatrolVolcanoes) / sizeof(kPatrolVolcanoes[0]);
+
 static int64_t env_secs(const char* key, int64_t def) {
     if (const char* e = std::getenv(key)) {
         if (e[0] != '\0') {
@@ -1280,6 +1303,11 @@ int main(int /*argc*/, char** /*argv*/) {
     const int64_t dvd_secs = env_secs("MAPLIBRE_DVD_SECS", 1800);       // +30 min
     const int64_t off_ac = env_secs("MAPLIBRE_OFF_AC_SECS", 43200);     // 12 h
     const int64_t off_batt = env_secs("MAPLIBRE_OFF_BATT_SECS", 1800);  // 30 min
+    // "巡回" (patrol) mode's per-volcano dwell time (dwg7/kaga0#1). The
+    // issue explicitly expects this to be retuned during development, so
+    // it's an env var like the screensaver timings above rather than a
+    // hardcoded constant.
+    const int64_t patrol_secs = env_secs("MAPLIBRE_PATROL_SECS", 45);
     static const uint32_t COLORS[6] = {0xff5050, 0x50c8ff, 0x78ff78,
                                        0xffdc50, 0xdc78ff, 0xff9650};
 
@@ -1289,7 +1317,6 @@ int main(int /*argc*/, char** /*argv*/) {
         int prev = -1;
         size_t show = 0;
         int otick = 0;                  // sensor-read throttle counter
-        char clock[6] = "";             // last "HH:MM" pushed to the UI
         int cap_tick = 0;               // drives the working animation's dots
         std::string cap_word, cap_text; // last caption pushed (change gate)
         float wave_level = 0.f;         // smoothed input level for the wave
@@ -1300,6 +1327,10 @@ int main(int /*argc*/, char** /*argv*/) {
         // /proc/stat jiffy counters from the previous debug-text sample, for
         // the CPU% delta below (-1 = no previous sample yet).
         long long prev_cpu_total = -1, prev_cpu_idle = -1;
+        // "巡回" (patrol) mode state (dwg7/kaga0#1).
+        bool patrol_was_on = false;    // edge-detects patrol-on turning on
+        int patrol_index = 0;          // last volcano flown to
+        int64_t patrol_last_switch_ms = 0;
     };
     auto ss = std::make_shared<SaverState>();
 
@@ -1339,19 +1370,35 @@ int main(int /*argc*/, char** /*argv*/) {
                 }
                 win->window().request_redraw();
             }
-            // Wall clock. This timer runs at 60ms, but the readout only
-            // changes once a minute, so only touch the property then: a
-            // SharedString assignment 16x/s would be pure churn in the render
-            // budget. Rendering is continuous, so no explicit redraw is needed.
+
+            // "巡回" (patrol) mode (dwg7/kaga0#1): while the toolbar toggle
+            // is on, auto-cycle the volcano list on MAPLIBRE_PATROL_SECS
+            // (default 45s) -- the same smap->fly_to() the ComboBox's own
+            // `selected` handler calls, and the same current-index update,
+            // so the dropdown always shows whichever volcano patrol just
+            // flew to. Turning it on jumps immediately (patrol_last_switch_ms
+            // reset to 0 makes the very first elapsed-time check pass at
+            // once) rather than waiting a full interval with no visible
+            // change. Each switch counts as activity so the idle
+            // screensaver doesn't take over mid-demo -- the whole point of
+            // patrol mode is to keep the live map visible and moving.
             {
-                char hhmm[6];
-                const std::time_t t = std::time(nullptr);
-                std::tm tm{};
-                if (::localtime_r(&t, &tm) &&
-                    std::strftime(hhmm, sizeof hhmm, "%H:%M", &tm) &&
-                    std::strcmp(hhmm, ss->clock) != 0) {
-                    std::memcpy(ss->clock, hhmm, sizeof hhmm);
-                    win->set_clock_text(slint::SharedString(hhmm));
+                const bool patrol_on = win->get_patrol_on();
+                if (patrol_on && !ss->patrol_was_on) {
+                    ss->patrol_index = win->get_volcano_current_index();
+                    ss->patrol_last_switch_ms = 0;
+                }
+                ss->patrol_was_on = patrol_on;
+                if (patrol_on) {
+                    const int64_t now = now_ms();
+                    if (now - ss->patrol_last_switch_ms >= patrol_secs * 1000) {
+                        ss->patrol_index = (ss->patrol_index + 1) % kPatrolVolcanoCount;
+                        const auto& v = kPatrolVolcanoes[ss->patrol_index];
+                        smap->fly_to(v.lat, v.lon, 12);
+                        win->set_volcano_current_index(ss->patrol_index);
+                        ss->patrol_last_switch_ms = now;
+                        last_activity->store(now);
+                    }
                 }
             }
 
