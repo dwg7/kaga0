@@ -465,14 +465,20 @@ export component MapWindow inherits Window {
                     visible: root.kbd-connected;
                     source: root.kbd-icon;
                 }
-                // Right cluster, left to right:  [Wi-Fi] SSID   [battery] AC NN%   HH:MM
-                // Everything here is anchored to the right edge, so the widths
-                // below are what each field is allowed to occupy. The battery
-                // label is left-aligned so it sits against its icon: giving it
-                // a wide right-aligned box instead leaves a gap that reads as a
-                // layout bug.
+                // Right cluster, left to right: [Wi-Fi] [battery] AC NN%
+                // <debug readout>. Everything here is anchored to the right
+                // edge, so the widths below are what each field is allowed
+                // to occupy. Re-laid-out 2026-08-31 after the wall clock
+                // (formerly the rightmost item) was removed (#2) -- the
+                // debug readout now takes that rightmost/flush-to-the-edge
+                // slot instead of sitting in what read as an arbitrary gap
+                // further in (藤村さん: 「今の位置や中途半端なイメージを
+                // 招く」), and Wi-Fi/battery shifted left to make room for
+                // its width. The battery label is left-aligned so it sits
+                // against its icon: giving it a wide right-aligned box
+                // instead leaves a gap that reads as a layout bug.
                 Image {                     // Wi-Fi: grey+red-X=down, yellow=no route, green=ok
-                    x: parent.width - 264px;
+                    x: parent.width - 434px;
                     y: 3px;
                     width: 20px;
                     height: 20px;
@@ -482,8 +488,29 @@ export component MapWindow inherits Window {
                 // the network name reads as at odds with the offline-appliance
                 // premise. The Wi-Fi icon above still conveys connection state
                 // (grey/yellow/green) without naming the network.
+                Image {                     // battery level/charge icon (Icons8)
+                    x: parent.width - 406px;
+                    y: 3px;
+                    width: 20px;
+                    height: 20px;
+                    image-fit: contain;
+                    visible: root.battery-percent >= 0;
+                    source: root.battery-icon;
+                }
+                Text {                      // battery %, hard against its icon
+                    x: parent.width - 382px;
+                    y: 0px;
+                    width: 66px;            // widest case: "BAT 100%"
+                    height: 100%;
+                    visible: root.battery-percent >= 0;
+                    text: (root.battery-plugged ? "AC " : "BAT ") + root.battery-percent + "%";
+                    color: root.battery-percent <= 20 ? #ff8080 : white;
+                    font-size: 14px;
+                    horizontal-alignment: left;
+                    vertical-alignment: center;
+                }
                 Text {                      // dev-only: "<w>x<h> <fps>fps <cpu>%cpu <temp>°C"
-                    x: parent.width - 564px;
+                    x: parent.width - 308px;
                     y: 0px;
                     width: 300px;
                     height: 100%;
@@ -498,27 +525,6 @@ export component MapWindow inherits Window {
                     color: #888888;
                     font-size: 14px;
                     horizontal-alignment: right;
-                    vertical-alignment: center;
-                }
-                Image {                     // battery level/charge icon (Icons8)
-                    x: parent.width - 152px;
-                    y: 3px;
-                    width: 20px;
-                    height: 20px;
-                    image-fit: contain;
-                    visible: root.battery-percent >= 0;
-                    source: root.battery-icon;
-                }
-                Text {                      // battery %, hard against its icon
-                    x: parent.width - 128px;
-                    y: 0px;
-                    width: 66px;            // widest case: "BAT 100%"
-                    height: 100%;
-                    visible: root.battery-percent >= 0;
-                    text: (root.battery-plugged ? "AC " : "BAT ") + root.battery-percent + "%";
-                    color: root.battery-percent <= 20 ? #ff8080 : white;
-                    font-size: 14px;
-                    horizontal-alignment: left;
                     vertical-alignment: center;
                 }
                 // Wall clock removed (2026-08-31, dwg7/kaga0#2): the RPi has
