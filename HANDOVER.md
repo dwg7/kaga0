@@ -80,3 +80,12 @@ fps・CPU使用率・SoC温度は実装・実機確認とも完了済み。
 `ssh $KAGA_USER@$KAGA_HOST`。ビルド成果物は実機上の
 `~/poc/mln-slint-cpp/build/cpp/maplibre-slint-gl`、appliance化後は
 `/opt/kaga/bin/maplibre-slint-gl`にコピーされる(`just autoexec true`が実施)。
+
+**重要(2026-09-13〜)**: m329(RPi 4B)は、別プロジェクト`rpi-geoserver0`と
+**同一の物理機体をmicroSDカードのイメージ入れ替えで共用**する運用になった。
+`ssh $KAGA_HOST`が繋がらない場合、機体が壊れたわけではなく、単に現在
+rpi-geoserver0側のSDカード(Ubuntu Server)で稼働している可能性がある。
+kaga0のシステムイメージは`slate.local`の`/Volumes/pmtiles-store/dwg7/kaga0/backups/`
+にバックアップされており、いつでも復元して使える状態を保つ想定
+(藤村さん・rpi-geoserver0担当セッションとの合意、2026-09-13)。作業前には
+現在どちらのカードが挿さっているか藤村さんに確認すること。
