@@ -7,6 +7,15 @@
 # https://www.raspberrypi.com/news/cloud-init-on-raspberry-pi-os/
 # (renderer: NetworkManager / regulatory-domain / optional: true が要点。
 # optional: trueが無いと、Wi-Fi接続待ちで起動がブロックされる — 実機で確認済み)
+# **`ethernets: eth0:` を明示的に書いておく**こと。netplanは「書かれていない
+# 設定は無効」という仕組みのため、`wifis:`だけのnetwork-configを書くと、
+# 有線LANの物理リンクは確立するのにDHCPでIPを取りに行く設定自体が存在せず、
+# 有線接続(方針上の主系統)が機能しなくなる——「保険のWi-Fiを足しただけの
+# つもりが主系統を壊す」という本末転倒な結果になる。rpi-geoserver0
+# プロジェクト(同じRPi4Bを共用、Ubuntu Server)がこのコードを流用した際に
+# 実機で踏んで発覚(2026-09-13、cross-session共有)。kaga0では実機での
+# 再現確認はできていないが(m329は現在rpi-geoserver0側のSDカードで稼働中)、
+# 安全側に倒して先に修正済み。
 # SSIDは電波として周囲に公開されている情報なので対話プロンプトでも問題ないが、
 # パスワードはこのスクリプトの実行者(藤村さん)の端末で直接入力してもらうか、
 # .env(git管理外)にWIFI_SSID/WIFI_PASSWORDとして書いてもらう。
@@ -56,6 +65,10 @@ out_path = sys.argv[1]
 
 doc = f"""network:
   version: 2
+  ethernets:
+    eth0:
+      dhcp4: true
+      optional: true
   wifis:
     renderer: NetworkManager
     wlan0:
